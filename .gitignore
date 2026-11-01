@@ -1,0 +1,12 @@
+node_modules/
+dist-web/
+fonts/*.ttf
+fonts/*.otf
+fonts/SHA256SUMS.local
+out/
+*.local.*
+# Private test documents stay outside the repository; this is a backstop.
+private/
+dist-app/
+fonts/licenses/
+.DS_Store

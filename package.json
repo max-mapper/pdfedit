@@ -1,0 +1,37 @@
+{
+  "name": "pdfedit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Client-side PDF text editor on PDFium (WebAssembly): render, detect paragraph boxes, edit and fit text, export real text objects.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "fonts": "bash scripts/fetch-fonts.sh",
+    "web:dev": "vite web --port 5180",
+    "web:build": "vite build web --outDir ../dist-web --emptyOutDir",
+    "app:dev": "vite app --config app/vite.config.ts --port 5181",
+    "app:build": "vite build app --config app/vite.config.ts --outDir ../dist-app --emptyOutDir"
+  },
+  "dependencies": {
+    "@cto.af/linebreak": "^5.0.0",
+    "@embedpdf/pdfium": "^2.15.1",
+    "harfbuzzjs": "^1.6.4",
+    "hyphen": "^1.14.1",
+    "pako": "^2.1.0",
+    "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "@types/node": "^24.19.2",
+    "@types/pako": "^2.0.4",
+    "@types/pngjs": "^6.0.5",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7"
+  }
+}

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pdfedit</title>
+<style>
+  :root { --accent: #1a73e8; --muted: #666; --line: #d0d4da; }
+  body { font: 13px system-ui, sans-serif; margin: 0; background: #eef0f3; color: #222; }
+  header { position: sticky; top: 0; z-index: 10; background: #fff; border-bottom: 1px solid var(--line); padding: 8px 16px;
+           display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  header .group { display: flex; gap: 6px; align-items: center; }
+  header label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+  header input[type=number] { width: 4.5em; }
+  header button { font: inherit; padding: 2px 8px; border: 1px solid var(--line); background: #f8f9fa; border-radius: 4px; cursor: pointer; }
+  header button[aria-pressed=true] { background: #dbe7fb; border-color: var(--accent); }
+  header button:disabled { opacity: .45; cursor: default; }
+  #tools[aria-disabled=true] { opacity: .45; pointer-events: none; }
+  #log { color: var(--muted); flex: 1 1 80%; font-size: 12px; }
+  main { padding: 16px; overflow: auto; }
+  #stage { position: relative; margin: 0 auto; background: #fff; box-shadow: 0 1px 4px #0003; }
+  #stage canvas { position: absolute; left: 0; top: 0; }
+  #frames, #editlayer { position: absolute; inset: 0; }
+  #editlayer { pointer-events: none; }
+  .frame { position: absolute; box-sizing: border-box; border: 1px dashed #1a73e855; cursor: text; }
+  .frame:hover { border-color: #1a73e8aa; background: #1a73e80a; }
+  .frame.edited { border-color: #0a8f4f88; }
+  .frame.overflow { border-color: #d93025; border-style: solid; }
+  .frame.locked { border-color: #9995; background: repeating-linear-gradient(45deg, #9991 0 4px, transparent 4px 8px); cursor: not-allowed; }
+  .frame.second { outline: 2px solid #f9ab00; }
+  .frame.vertical { cursor: vertical-text; }
+  .picture { position: absolute; box-sizing: border-box; pointer-events: none; }
+  .picture.moved { outline: 1.5px dashed #e8710a; outline-offset: 2px; }
+  #editbox { position: absolute; box-sizing: border-box; outline: 1.5px solid var(--accent); pointer-events: auto; }
+  #editbox.overflow { outline-color: #d93025; }
+  /* the text input (web/textinput.ts): a hidden textarea; the caret and the selection are drawn from the layout */
+  #ta { position: absolute; left: 0; top: 0; width: 2px; height: 12px; padding: 0; margin: 0; border: 0; outline: none; resize: none;
+        overflow: hidden; white-space: pre; opacity: 0; color: transparent; background: transparent; caret-color: transparent;
+        font-size: 12px; pointer-events: none; }
+  #editbox.show #ta { opacity: 1; width: 280px; height: auto !important; min-height: 40px; color: #1a73e8; background: #fffe; white-space: pre-wrap; }
+  #selrects { position: absolute; inset: 0; pointer-events: none; }
+  #selrects .selr { position: absolute; background: #1a73e840; }
+  #caret { position: absolute; background: var(--accent); pointer-events: none; }
+  #caret.blink { animation: pe-blink 1.06s steps(1) 0.5s infinite; }
+  @keyframes pe-blink { 50% { opacity: 0; } }
+  .h { position: absolute; width: 9px; height: 9px; background: #fff; border: 1.5px solid var(--accent); box-sizing: border-box; }
+  .h.e { right: -5px; top: calc(50% - 5px); cursor: ew-resize; }
+  .h.w { left: -5px; top: calc(50% - 5px); cursor: ew-resize; }
+  .h.s { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+  .h.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+  .h.move { left: -1px; top: -16px; width: 26px; height: 14px; border-radius: 3px 3px 0 0; cursor: move; background: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <div class="group">
+    <input type="file" id="file" accept="application/pdf">
+    <label>page <input type="number" id="page" value="1" min="1"></label>
+  </div>
+  <div class="group" id="tools" aria-disabled="true">
+    <label title="Apply styles to the whole box or to the paragraph with the caret">to
+      <select id="scope"><option value="box">box</option><option value="para">paragraph</option></select></label>
+    <label>size <input type="number" id="size" step="0.5" min="1"></label>
+    <button id="bold" aria-pressed="false" title="Bold"><b>B</b></button>
+    <button id="italic" aria-pressed="false" title="Italic (no italic face ships yet: glyphs stay upright)"><i>I</i></button>
+    <input type="color" id="color" title="Colour">
+    <select id="align" title="Alignment">
+      <option value="left">left</option><option value="center">centre</option><option value="right">right</option><option value="justify">justify</option>
+    </select>
+    <label>leading <input type="number" id="leading" step="0.05" min="0.5"></label>
+    <label title="Character spacing, points">spacing <input type="number" id="spacing" step="0.1"></label>
+    <button id="reset-spacing" title="Character spacing 0 for every run of the box">spacing 0</button>
+    <label title="Height stays as set; text that does not fit is an overflow"><input type="checkbox" id="pin"> pin height</label>
+    <button id="split" title="Split the box at the caret">split</button>
+    <button id="merge" title="Merge the shift-clicked box into this one">merge</button>
+    <button id="show" aria-pressed="false" title="Show the input text over the preview">input</button>
+    <button id="fit" title="Fit every edited box on this page: widen, grow, single leading, shrink to 70%; what still does not fit is listed">fit page</button>
+  </div>
+  <div class="group">
+    <button id="undo" disabled title="Undo (Ctrl+Z)">undo</button>
+    <button id="redo" disabled title="Redo (Ctrl+Shift+Z)">redo</button>
+  </div>
+  <span id="log">PDFium loads in a worker; nothing leaves this page.</span>
+  <a id="ofl" href="#" target="_blank" style="font-size:11px;color:#888">fonts: Noto, OFL 1.1</a>
+</header>
+<main>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <canvas id="preview"></canvas>
+    <div id="frames"></div>
+    <div id="editlayer">
+      <div id="editbox" hidden>
+        <textarea id="ta" tabindex="-1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Box text"></textarea>
+        <div id="selrects"></div>
+        <div id="caret" hidden></div>
+        <div class="h move" data-h="move" title="Move"></div>
+        <div class="h e" data-h="e"></div><div class="h w" data-h="w"></div>
+        <div class="h s" data-h="s"></div><div class="h se" data-h="se"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>

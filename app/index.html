@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdfedit</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header id="bar">
+  <div class="grp">
+    <button id="open" class="primary" title="Open a PDF (or drop one on the window)">Open PDF…</button>
+    <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+    <span id="docname" class="docname"></span>
+  </div>
+  <div class="grp" role="group" aria-label="Zoom">
+    <button id="zoom-out" class="icon" title="Zoom out (Ctrl −)" aria-label="Zoom out">−</button>
+    <select id="zoom-sel" title="Zoom (Ctrl + wheel)" aria-label="Zoom level"></select>
+    <button id="zoom-in" class="icon" title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+    <button id="fit-width" title="Zoom to the width of the widest page">Fit width</button>
+    <button id="fit-page" title="Zoom so the current page fits the window">Fit page</button>
+  </div>
+  <div class="grp" role="group" aria-label="History">
+    <button id="undo" disabled title="Undo (Ctrl+Z)">Undo</button>
+    <button id="redo" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+  </div>
+  <div class="grp" role="group" aria-label="Fit">
+    <button id="fit-this" disabled title="Fit every edited box on this page: widen, grow, single leading, move a picture, shrink to 70%">Fit this page</button>
+    <button id="fit-all" disabled title="Fit every page that has edited boxes (one undo step)">Fit all edited pages</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="grp">
+    <a id="download" class="button" hidden>Download</a>
+    <button id="export" class="primary" disabled title="Write the edits into the PDF (incremental save) and verify the result">Export PDF</button>
+  </div>
+</header>
+
+<div id="body">
+  <aside id="thumbs" aria-label="Pages"></aside>
+  <main id="viewer" tabindex="-1">
+    <div id="pages"></div>
+    <div id="empty">
+      <div class="drop">
+        <div class="drop-title">Open a PDF to edit its text</div>
+        <p>Drop a file anywhere on this window, or <button id="open2" class="link">choose one</button>.</p>
+        <p class="muted">Everything runs in this browser tab: the file is not uploaded anywhere.</p>
+      </div>
+    </div>
+  </main>
+  <aside id="panel">
+    <section id="typo" class="card" aria-disabled="true">
+      <h2>Text</h2>
+      <p class="hint" id="typo-hint">Click a box to select it; double-click to edit its text. Shift-click a second box to merge.</p>
+      <div class="row"><span class="lbl">Apply to</span>
+        <div class="seg" id="scope"><button data-v="box" aria-pressed="true">Box</button><button data-v="para" aria-pressed="false">Paragraph <span id="para-n"></span></button></div></div>
+      <div class="row"><label class="lbl" for="font">Font</label><select id="font"></select></div>
+      <div class="row note" id="font-note"></div>
+      <div class="row"><label class="lbl" for="size">Size</label><input id="size" type="number" step="0.5" min="1"><span class="unit">pt</span>
+        <span class="tools">
+          <button id="bold" class="tog" aria-pressed="false" title="Bold"><b>B</b></button>
+          <button id="italic" class="tog" aria-pressed="false" disabled title="Italic is not available: no italic face ships"><i>I</i></button>
+          <button id="underline" class="tog" aria-pressed="false" title="Underline (kept in the model; not drawn or written yet)"><u>U</u></button>
+          <input id="color" type="color" title="Colour">
+        </span></div>
+      <div class="row"><span class="lbl">Align</span>
+        <div class="seg" id="align">
+          <button data-v="left" title="Left" aria-label="Align left"><svg viewBox="0 0 16 16"><path d="M2 3h12M2 6.5h8M2 10h12M2 13.5h8"/></svg></button>
+          <button data-v="center" title="Centre" aria-label="Centre"><svg viewBox="0 0 16 16"><path d="M2 3h12M4 6.5h8M2 10h12M4 13.5h8"/></svg></button>
+          <button data-v="right" title="Right" aria-label="Align right"><svg viewBox="0 0 16 16"><path d="M2 3h12M6 6.5h8M2 10h12M6 13.5h8"/></svg></button>
+          <button data-v="justify" title="Justify" aria-label="Justify"><svg viewBox="0 0 16 16"><path d="M2 3h12M2 6.5h12M2 10h12M2 13.5h8"/></svg></button>
+        </div></div>
+      <div class="row"><label class="lbl" for="leading">Leading</label><input id="leading" type="number" step="0.05" min="0.5"><span class="unit">× size</span></div>
+      <div class="row"><label class="lbl" for="spacing">Spacing</label><input id="spacing" type="number" step="0.1"><span class="unit">pt</span>
+        <button id="reset-spacing" title="Character spacing 0 for every run of the box">Reset to 0</button></div>
+      <div class="row"><label class="lbl" for="space-before" title="Space before the paragraph">Before</label><input id="space-before" type="number" step="0.5"><span class="unit">pt</span></div>
+      <div class="row"><label class="lbl" for="space-after" title="Space after the paragraph">After</label><input id="space-after" type="number" step="0.5"><span class="unit">pt</span></div>
+      <div class="row"><label class="lbl" for="indent">Indent</label><input id="indent" type="number" step="1"><span class="unit">pt</span><span class="muted small">kept; not laid out yet</span></div>
+      <h3>Box</h3>
+      <div class="row xywh">
+        <label title="Left edge, points from the page's left"><span>X</span><input id="bx" type="number" step="1"></label><label title="Top edge, points from the page's top"><span>Y</span><input id="by" type="number" step="1"></label>
+        <label title="Width, points"><span>W</span><input id="bw" type="number" step="1" min="4"></label><label title="Height, points (setting it pins the height)"><span>H</span><input id="bh" type="number" step="1" min="4"></label>
+      </div>
+      <div class="row"><label class="check"><input type="checkbox" id="pin"> Pin height</label>
+        <span class="muted small" id="pin-note">text that does not fit overflows</span></div>
+      <div class="row"><button id="split" title="Split the box at the caret (or before the focused paragraph)">Split box</button>
+        <button id="merge" disabled title="Merge the shift-clicked box into this one">Merge</button></div>
+      <p class="muted small" id="boxinfo"></p>
+    </section>
+    <section id="fitrep" class="card">
+      <h2>Fit</h2>
+      <div id="fit-body"><p class="muted">Edit some text, then fit the page: boxes widen, grow, take single leading, move a picture or shrink to 70%. What still does not fit is outlined in red.</p></div>
+    </section>
+    <section id="exprep" class="card">
+      <h2>Export</h2>
+      <div id="export-body"><p class="muted">Export writes the edited boxes into the PDF as real text (incremental save) and checks the result in PDFium.</p></div>
+    </section>
+  </aside>
+</div>
+
+<footer id="status">
+  <span class="st">Page <input id="pageno" type="number" min="1" value="1" aria-label="Page number"> of <span id="pagecount">0</span></span>
+  <span class="st" id="st-zoom">100%</span>
+  <span class="st" id="st-detect">detection –</span>
+  <span class="st" id="st-edits">no edits</span>
+  <span class="chip" id="st-commit" hidden></span>
+  <span class="st msg" id="st-msg"></span>
+  <span class="spacer"></span>
+  <a id="ofl" target="_blank" rel="noopener">Fonts: Noto, OFL 1.1</a>
+</footer>
+
+<div id="dropmask" hidden><div>Drop the PDF to open it</div></div>
+
+<div id="editbox" hidden>
+  <textarea id="ta" tabindex="-1" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Box text"></textarea>
+  <div id="selrects"></div>
+  <div id="caret" hidden></div>
+  <div class="h move" data-h="move" title="Move"></div>
+  <div class="h n" data-h="n"></div><div class="h s" data-h="s"></div><div class="h e" data-h="e"></div><div class="h w" data-h="w"></div>
+  <div class="h ne" data-h="ne"></div><div class="h nw" data-h="nw"></div><div class="h se" data-h="se"></div><div class="h sw" data-h="sw"></div>
+</div>
+
+<script type="module" src="./main.ts"></script>
+</body>
+</html>
