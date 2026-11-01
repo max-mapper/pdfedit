@@ -2,6 +2,8 @@
 
 A PDF text editor that runs in the browser. PDFium, built to WebAssembly, reads and draws each page. pdfedit finds the paragraph boxes, lets you edit the text, and fits longer text back into the design. It saves real, searchable text. Only the edited text is removed from the page, and the new text is added as a new layer.
 
+**Demo:** https://max-mapper.github.io/pdfedit/ (open a PDF, double-click a paragraph, edit, export).
+
 ## Run
 
 ```bash
