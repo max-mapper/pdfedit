@@ -63,7 +63,7 @@ export type Result = {
   tables: Table[];
   skipped: Skipped[];
   ms: number;               // detection time
-  /** With opts.debug: the rule segments and panel candidates (shape indices) the detector used. */
+  /** With opts.debug: the rule pieces and panel candidates (shape indices) the detector used. */
   debug?: { rules: Rect[]; panelCandidates: number[]; gutterSplits: number };
 };
 
@@ -78,7 +78,7 @@ export type DetectOptions = {
 export type Thresholds = {
   /** Characters on one line agree in baseline within this × size. */
   baselineTol: number;
-  /** A gap along a line larger than this many em starts a new line segment (columns, table cells). */
+  /** A gap along a line larger than this many em starts a new piece of the line (columns, table cells). */
   lineGap: number;
   /** A gap of at least this many em inside a line is a column-gutter candidate; it splits the line when the
    *  lines around it (gutterWindow × size above and below) mostly leave the same place empty. */

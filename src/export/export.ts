@@ -49,7 +49,6 @@ import { loadHarfBuzz } from '../text/hb.ts';
 import type { Layout, Line } from '../text/layout.ts';
 import type { Box, Doc, FontRef, LaidBox, Page } from '../model/types.ts';
 import { documentFontCoverage, missingFrom, nodeShippedFaces, pickSubstitute, type SubstituteFlag } from './fonts.ts';
-import { applyPictureMoves, type PictureMoved, type PictureSkipped } from './pictures.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Public types
@@ -133,9 +132,6 @@ export type PageReport = {
   fontBytes: number;        // bytes of the fonts first used on this page
   growth: number;           // (contentBytes + fontBytes) / original file size
   verify: PageVerify | null;
-  /** Pictures the fitter moved or shrank (src/export/pictures.ts): old and new frames; and moves refused, why. */
-  picturesMoved?: PictureMoved[];
-  picturesSkipped?: PictureSkipped[];
 };
 
 export type ExportReport = {
@@ -173,7 +169,7 @@ export class ExportError extends Error {
 export type PageCheck = {
   page: number;
   /** `frame`: where the new text was laid (page space); its text is read from the characters inside it. */
-  boxes: { box: string; newText: string; oldSegments: string[]; frame?: Rect }[];
+  boxes: { box: string; newText: string; oldPieces: string[]; frame?: Rect }[];
   regions: Rect[];          // page rectangles that may change
 };
 
@@ -303,7 +299,7 @@ const laidText = (laid: LaidBox) => laid.lines.map((l) => l.runs.map((r) => r.gl
 // The export
 
 type Cand = {
-  box: Box; laid: LaidBox; objs: number[]; sites: TextSite[]; faces: Map<string, Face>; oldSegments: string[];
+  box: Box; laid: LaidBox; objs: number[]; sites: TextSite[]; faces: Map<string, Face>; oldPieces: string[];
 };
 
 type PagePlan = {
@@ -325,7 +321,7 @@ function fontNames(edit: PdfEdit, page: number): string[] {
 
 /** Old text as PDFium extracts it, in runs of consecutive character indices (each run is a substring of the page's
  *  extracted text, which is what the verification counts). */
-function oldSegments(charIdx: number[], chars: Char[]): string[] {
+function oldPieces(charIdx: number[], chars: Char[]): string[] {
   const idx = [...new Set(charIdx)].filter((i) => i >= 0 && i < chars.length).sort((a, b) => a - b);
   const segs: string[] = [];
   let cur = '';
@@ -583,9 +579,9 @@ export async function exportDoc(
         // Old text for the verification: PDFium's own characters of the box, else the model's paragraph text, else
         // the text of the objects being removed.
         const paraText = box.source.paragraphs.map((p) => norm(p.text)).filter(Boolean);
-        const old = box.source.chars.length ? oldSegments(box.source.chars, chars)
-          : paraText.length ? paraText : oldSegments(objsSorted.flatMap((t) => objs[t].chars), chars);
-        cands.push({ box, laid: lb, objs: objsSorted, sites: bsites, faces, oldSegments: old });
+        const old = box.source.chars.length ? oldPieces(box.source.chars, chars)
+          : paraText.length ? paraText : oldPieces(objsSorted.flatMap((t) => objs[t].chars), chars);
+        cands.push({ box, laid: lb, objs: objsSorted, sites: bsites, faces, oldPieces: old });
       }
 
       // Mixed operators: an operator that also shows characters of boxes not being written is split — blanked, and
@@ -767,7 +763,7 @@ export async function exportDoc(
           mcid: chosen?.mcid ?? null, tag: chosen?.tag ?? null, mcidMoved: moved,
           mcidsEmptied: seqs.slice(1).map((m) => m.mcid!), actualText: !!chosen?.actualText, artifact: !chosen && artifact,
         });
-        plan.check.boxes.push({ box: c.box.id, newText, oldSegments: c.oldSegments, frame: c.laid.frame });
+        plan.check.boxes.push({ box: c.box.id, newText, oldPieces: c.oldPieces, frame: c.laid.frame });
         // what may change: the source frame, the box's frame and the laid frame; the removed objects (page space: a
         // top-level object's bounds, else its characters' boxes); of a split operator, only the dropped characters
         plan.check.regions.push(c.box.source.frame, c.box.frame, c.laid.frame);
@@ -786,10 +782,6 @@ export async function exportDoc(
       }
       for (const r of pageRenames) pageEdits.push({ start: mapOffset(replacements, r.call.nameStart), end: mapOffset(replacements, r.call.nameEnd), text: pdfName(r.name) });
       if (pageRenames.length) edit.addPageXObjects(n, Object.fromEntries(pageRenames.map((r) => [r.name, r.ref])));
-      // picture moves the fitter made: wrapped in q … cm … Q where they are painted; old and new frames may change
-      const pics = applyPictureMoves({ edit, page, tree, src, replacements, pageEdits, uses: () => (uses ??= formUses(edit)) });
-      if (pics.moved.length || pics.skipped.length) Object.assign(pr, { picturesMoved: pics.moved, picturesSkipped: pics.skipped });
-      plan.check.regions.push(...pics.regions);
       if (rootBlanks.size || pageEdits.length) {
         const finalContents = pageEdits.length ? spliceBytes(blanked, pageEdits) : blanked;
         edit.setContents(n, finalContents);
@@ -941,9 +933,9 @@ export async function verifyExport(
           return cx >= f.x0 - 1 && cx <= f.x1 + 1 && cy >= f.y0 - 1 && cy <= f.y1 + 1;
         }).map((ch) => ch.unicode).join(''));
         const news = c.boxes.map((x) => norm(x.newText));
-        // old text: each distinct segment must occur fewer times than before, by the number of boxes that removed it
+        // old text: each distinct piece must occur fewer times than before, by the number of boxes that removed it
         const need = new Map<string, number>();
-        for (const x of c.boxes) for (const s of x.oldSegments) need.set(s, (need.get(s) ?? 0) + 1);
+        for (const x of c.boxes) for (const s of x.oldPieces) need.set(s, (need.get(s) ?? 0) + 1);
         const segOk = new Map<string, boolean | null>();
         for (const [s, k] of need) {
           const was = count(before, s);
@@ -956,11 +948,11 @@ export async function verifyExport(
           // whole page's text as the fallback
           const region = x.frame !== undefined ? inside(x.frame) : '';
           const newPresent = news[i] === '' || region.includes(news[i]) || after.includes(news[i]) || subsequence(news[i], region);
-          const r = x.oldSegments.map((s) => segOk.get(s) ?? null);
+          const r = x.oldPieces.map((s) => segOk.get(s) ?? null);
           const oldAbsent = r.some((q) => q === false) ? false : r.some((q) => q === true) ? true : null;
           v.text.push({ box: x.box, newPresent, oldAbsent });
           if (!newPresent) failures.push(`${at}, box ${x.box}: the new text does not extract ("${x.newText.slice(0, 50)}")`);
-          if (oldAbsent === false) failures.push(`${at}, box ${x.box}: the old text is still on the page ("${x.oldSegments.join(' ').slice(0, 50)}")`);
+          if (oldAbsent === false) failures.push(`${at}, box ${x.box}: the old text is still on the page ("${x.oldPieces.join(' ').slice(0, 50)}")`);
         });
         let rendered = false;
         try {

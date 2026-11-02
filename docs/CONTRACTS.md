@@ -87,7 +87,7 @@ emit(layout: Layout, at: { x: number; yTop: number }, fontKey: (face: Face) => s
 The source files' header comments are authoritative; this is the map.
 
 - `src/engine/pdfium.ts`: `page.shapes(): Shape[]` (paths, images, shadings: bounds in page space, fill, stroke,
-  `isRect`, `isRule`, `z`); `Char.fontSize` is the effective size (Tf × text-matrix scale), `fontSizeRaw` PDFium's;
+  `isRect`, `isRule`, `pathSegs`, `z`); `Char.fontSize` is the effective size (Tf × text-matrix scale), `fontSizeRaw` PDFium's;
   `TextObj.z` paint order; `decryptCopy`, `repairCopy`, `security`, `PdfiumOpenError`.
 - `src/layout/detect.ts`: `detectBoxes(page: PageInput, opts?) → Result` (types in `src/layout/types.ts`;
   thresholds in `DEFAULT_THRESHOLDS`).
@@ -100,15 +100,9 @@ The source files' header comments are authoritative; this is the map.
   `LaidBox` (glyph `c`/`p`, line `start`/`end`/`pEnd`).
 - `web/textinput.ts`: `TextInput`, the selected box's text input shared by app/ and web/ (a hidden textarea; the caret
   and the selection drawn from the layout).
-- `src/fit/fit.ts`: `fitPage(page, lay, opts?) → FitReport`.
 - `src/export/export.ts`: `exportDoc(original, doc, laid, opts?) → { bytes, report }`, `verifyExport`.
-- `src/pipeline.ts`: `translateAndFit(bytes, opts) → { bytes, doc, fit, shortened, substitutions, export, stats }`,
-  `commandTranslator`, `tableTranslator`, `commandShortener` (opt-in targeted shortening of unfit boxes).
+- `src/export/replace.ts`: `replaceText(bytes, table, opts?) → { bytes, doc, replaced, overflow, substitutions, export,
+  stats }` (exact paragraph replacements, headless; `bin/pdfedit.ts replace`). A longer text stays in its box and may
+  overflow it.
 - `src/fonts/`: `suggestSubstitutes(info) → Suggestion[]` (the font matcher), `CATALOG` (the open font families
   `scripts/fetch-fonts.ts` downloads), `prepareSubstitutes(doc, fonts)` (sets each document font's matched face).
-- `src/embed/`: `matchPairs(paragraphs, pairs) → { translations, used, unmatched }` and `createMatcher(pairs)` (paragraphs
-  to translation pairs by normalised source text), `serialiseState(doc)` / `parseState` / `applyState(doc, state)` (a
-  saved version: the edited boxes by page), `preparePage(editor, n, matcher, pageState)` (translate, saved boxes back,
-  fit), `hostReport` / `encodeReportHeader` / `substitutionsOf` (the export summary a host receives),
-  `segLinkTemplate(value, href)` / `segLinkFor(template, seg)` (the host's link to a segment). Used by the app's
-  embed mode (`app/embed.ts`, `docs/EMBED.md`).

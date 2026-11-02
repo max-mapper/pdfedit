@@ -1,6 +1,6 @@
 # pdfedit
 
-A PDF text editor that runs in the browser. PDFium, built to WebAssembly, reads and draws each page. pdfedit finds the paragraph boxes, lets you edit the text, and fits longer text back into the design. It saves real, searchable text. Only the edited text is removed from the page, and the new text is added as a new layer.
+A PDF text editor that runs in the browser. PDFium, built to WebAssembly, reads and draws each page. pdfedit finds the paragraph boxes and lets you edit the text in each box. The text reflows inside its own box. It saves real, searchable text. Only the edited text is removed from the page, and the new text is added as a new layer.
 
 **Demo:** https://max-mapper.github.io/pdfedit/ (open a PDF, double-click a paragraph, edit, export).
 
@@ -17,17 +17,12 @@ npm run app:dev      # the editor at http://localhost:5181
 
 ```bash
 node bin/pdfedit.ts detect in.pdf --pages 1,3
-node bin/pdfedit.ts translate-fit in.pdf out.pdf --pages 1 --translate-cmd "<cmd> [args]"
 node bin/pdfedit.ts replace in.pdf out.pdf --table pairs.json
 ```
 
-The translator command reads `{"pages": {"<n>": ["paragraph", …]}}` on stdin. It writes the same shape back with the translations.
+`pairs.json` lists exact paragraph replacements: `{"old text": "new text"}`.
 
 Node 24 runs the TypeScript directly. Module contracts are in `docs/CONTRACTS.md`.
-
-## Embed
-
-A host page can frame the editor and serve one document through an HTTP API: load, save versions, export. Build it with `node scripts/build-embed.mjs <outDir>`. The API is in `docs/EMBED.md`.
 
 ## Licence
 

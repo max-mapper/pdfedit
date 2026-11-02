@@ -12,7 +12,7 @@ import type { Doc } from './types.ts';
 let fonts: FontRegistry;
 before(async () => { fonts = await loadFonts(); });
 
-const docOf = (...boxes: ReturnType<typeof box>[]): Doc => ({ pages: [{ n: 0, w: 595, h: 842, boxes, panels: [], obstacles: [] }] });
+const docOf = (...boxes: ReturnType<typeof box>[]): Doc => ({ pages: [{ n: 0, w: 595, h: 842, boxes }] });
 const textOf = (ed: Editor, id: string) => ed.box(0, id).paragraphs.map((p) => p.runs.map((r) => r.text).join('')).join('\n');
 
 test('setText reflows inside the width and the height grows with the text', () => {
@@ -129,7 +129,6 @@ test('split and merge, with undo and redo', () => {
   assert.equal(textOf(ed, id), 'Para two.\nPara three.');
   const top = ed.laid(0, 'b0'), bottom = ed.laid(0, id);
   assert.ok(Math.abs(bottom.frame.y1 - top.frame.y0) < 1e-6, 'the new box starts where the first ends');
-  assert.ok(ed.box(0, id).source.neighbours.includes('b0'));
 
   ed.mergeBoxes(0, id, 'b1');
   assert.deepEqual(pg.boxes.map((x) => x.id), ['b0', id]);
@@ -194,27 +193,4 @@ test('gate: a keystroke (model update + layoutBox) under 16 ms on a 100-box page
   assert.ok(p95 < 16, `p95 ${p95} ms`);
   assert.ok(p50 < 8, `p50 ${p50} ms`);
   assert.equal(ed.history.length, 1);
-});
-
-test('fitPage is one undoable step: undo restores frames and sizes, redo applies the fit again', async () => {
-  const fonts = await loadFonts();
-  const box = {
-    id: 'a', kind: 'text' as const, frame: { x0: 100, x1: 160, y0: 700, y1: 712 }, rot: 0 as const, vertical: false, edited: false, locked: null, heightPinned: false,
-    paragraphs: [{ runs: [{ text: 'short', size: 10, color: [0, 0, 0] as [number, number, number], charSpacing: 0, bold: false, italic: false, underline: false,
-      font: { source: 'shipped' as const, name: 'NotoSans-Regular', bold: false, italic: false, serif: false } }], align: 'left' as const, leading: 1.2, spaceBefore: 0, spaceAfter: 0, indent: 0, bullet: null }],
-    source: { frame: { x0: 100, x1: 160, y0: 700, y1: 712 }, lines: 1, paragraphs: [{ text: 'short', size: 10, align: 'left', leading: 1.2 }], objs: [], chars: [], panel: null, neighbours: [] },
-  };
-  const doc = { pages: [{ n: 0, w: 600, h: 800, boxes: [box], panels: [], obstacles: [] }] };
-  const ed = new Editor(doc, fonts);
-  ed.setText(0, 'a', 0, 'a much longer English sentence that cannot fit on one line of sixty points');
-  const sizeBefore = doc.pages[0].boxes[0].paragraphs[0].runs[0].size;
-  const frameBefore = { ...doc.pages[0].boxes[0].frame };
-  const r = ed.fitPage(0);
-  assert.equal(r.boxes.length, 1);
-  assert.notDeepEqual(doc.pages[0].boxes[0].frame, frameBefore);
-  ed.undo();
-  assert.deepEqual(doc.pages[0].boxes[0].frame, frameBefore);
-  assert.equal(doc.pages[0].boxes[0].paragraphs[0].runs[0].size, sizeBefore);
-  ed.redo();
-  assert.notDeepEqual(doc.pages[0].boxes[0].frame, frameBefore);
 });

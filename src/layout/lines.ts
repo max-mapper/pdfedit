@@ -236,7 +236,7 @@ export function buildLines(page: PageInput, segs: Seg[], th: Thresholds): { line
           continue;
         }
         const rs = s.rects ?? [s.bounds];
-        if (rs.some((r) => cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1) && (s.kind === 'image' || s.isRect || s.rects || s.segments <= 12)) { kinds[i] = 'skip'; break; }
+        if (rs.some((r) => cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1) && (s.kind === 'image' || s.isRect || s.rects || s.pathSegs <= 12)) { kinds[i] = 'skip'; break; }
       }
     }
   }

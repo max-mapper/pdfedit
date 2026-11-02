@@ -6,10 +6,11 @@
 // paragraph with Enter and a line break with Shift+Enter and checks both survive the commit, undo and redo,
 // double-clicks a box and types, leaves the box
 // and waits for the page's commit re-render ("rendered": the page bitmap is PDFium's render of the exported page, and
-// it differs from the original inside the box), types into a vertical box, fits the page, exports, downloads the
-// result and checks in PDFium that the typed text is in it. Every request to another host is aborted and listed.
+// it differs from the original inside the box), types into a vertical box, nudges and clears a box with the keyboard,
+// undoes and redoes, exports, downloads the result and checks in PDFium that the typed text is in it. Every request
+// to another host is aborted and listed.
 //   node scripts/app-smoke.ts [out-dir]
-// SHOT=<file.png> saves a screenshot of the window after the fit. Playwright comes from PW_CORE (default: the
+// SHOT=<file.png> saves a screenshot of the window before the export. Playwright comes from PW_CORE (default: the
 // playwright-core package), Chromium from CHROME (default: the one Playwright installed). Synthetic text only.
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
@@ -279,18 +280,15 @@ try {
   summary.keyboard = { nudged: k1.x0 - k0.x0, cleared: k1.text === '', undoRestoresText: k2.text === k0.text, undoRestoresFrame: k3.x0 === k0.x0 };
   checks.keyboard = Math.abs(k1.x0 - k0.x0 - 1) < 1e-9 && k1.text === '' && k2.text === k0.text && Math.abs(k2.x0 - k1.x0) < 1e-9 && Math.abs(k3.x0 - k0.x0) < 1e-9;
 
-  // 5. fit this page (the selected box's page)
-  await page.click('#fit-this');
-  await waitApp((a) => a.lastFit.length > 0, undefined, 10000);
-  summary.fit = await app((a) => a.lastFit.map((r: A) => ({ page: r.page, boxes: r.boxes.length, fixed: r.boxes.filter((b: A) => b.result === 'fixed').length,
-    fits: r.boxes.filter((b: A) => b.result === 'fits').length, unfit: r.boxes.filter((b: A) => b.result === 'unfit').map((b: A) => ({ box: b.box, charsOver: b.charsOver })),
-    pictures: r.pictures.length, ms: r.ms })));
+  // 5. the page commits again; the toolbar has only the general editor's controls
   await waitApp((a) => ['rendered', 'refused'].includes(a.pageState(0).kind), undefined, 60000);
-  summary.afterFit = await app((a) => a.pageState(0));
-  checks.fit = (summary.fit as A[]).length === 1;
+  summary.afterKeyboard = await app((a) => a.pageState(0));
+  summary.toolbar = await page.$$eval('#bar button', (bs: A[]) => bs.map((b) => b.id));
+  checks.toolbar = (summary.toolbar as string[]).join(',') === 'open,zoom-out,zoom-in,fit-width,fit-page,undo,redo,export';
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
 
-  // 6. undo and redo across the fit
+  // 6. undo and redo of a new edit (a nudge: one step, the redo stack cleared)
+  await page.keyboard.press('ArrowRight');
   const ur = await app((a) => ({ before: a.editor.history.length }));
   await page.keyboard.press('Control+z');
   const afterUndo = await app((a) => ({ len: a.editor.history.length, canRedo: a.editor.canRedo }));

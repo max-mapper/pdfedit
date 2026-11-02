@@ -29,7 +29,7 @@ export function box(id: string, frame: Box['frame'], paragraphs: Paragraph[]): B
   return {
     id, kind: 'text', frame: { ...frame }, rot: 0, vertical: false, paragraphs, edited: false, locked: null, heightPinned: false,
     source: {
-      frame: { ...frame }, lines: paragraphs.length, objs: [], chars: [], panel: null, neighbours: [],
+      frame: { ...frame }, objs: [], chars: [],
       paragraphs: paragraphs.map((p) => ({ text: p.runs.map((r) => r.text).join(''), size: p.runs[0].size, align: p.align, leading: p.leading })),
     },
   };
@@ -44,7 +44,7 @@ export function gridPage(n = 100): Page {
     const x0 = 20 + c * (colW + 18), y1 = h - 20 - r * (rowH + 2);
     boxes.push(box(`b${i}`, { x0, x1: x0 + colW, y1, y0: y1 - rowH + 4 }, [para(filler(160, i + 1), { run: { size: 8, charSpacing: 0.4 } })]));
   }
-  return { n: 0, w, h, boxes, panels: [], obstacles: [] };
+  return { n: 0, w, h, boxes };
 }
 
 /** A synthetic PDF for the browser smoke run: `n` short paragraphs in a 4-column grid, Helvetica, every fifth

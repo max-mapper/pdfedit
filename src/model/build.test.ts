@@ -62,31 +62,22 @@ test('runs carry size, colour, bold and the document font; source state is fille
   assert.equal(pr[0].charSpacing, 0);
   assert.ok(Math.abs(para.paragraphs[0].leading - 1.3) < 0.01, `leading ${para.paragraphs[0].leading}`);
   const s = para.source;
-  assert.equal(s.lines, 3);
   assert.deepEqual(s.frame, para.frame);
   assert.equal(s.paragraphs[0].text, body.join(' '));
   assert.equal(s.paragraphs[0].size, 10);
   assert.ok(s.objs.length === 3, `objs ${s.objs}`);
   assert.ok(s.chars.length >= body.join('').replace(/ /g, '').length);
   assert.ok(s.baseline! > 8.5 && s.baseline! < 10, `baseline ${s.baseline}`);   // the frame is the em box: ascent ≈ 0.95 em
-  assert.equal(s.panel, null);
 
   const note = find(m, 'beside');
   assert.deepEqual(note.paragraphs[0].runs[0].color, [0, 0, 1]);
-  assert.ok(!note.source.neighbours.includes(para.id), 'apart boxes are not neighbours');
 });
 
-test('character spacing is measured from the characters; vertical text is editable; pictures and panels', async () => {
+test('character spacing is measured from the characters; vertical text is editable', async () => {
   const bytes = await buildPdf([
     { t: 'set', text: 'Tracked', x: 60, y: 760, size: 12, face: 'sans', spacing: 1.5 },
     { t: 'set', text: 'Plain words', x: 60, y: 700, size: 12, face: 'sans' },
     { t: 'vtext', text: '縦書きの見出し', x: 500, yTop: 780, size: 14 },
-    { t: 'rect', x: 50, y: 400, w: 240, h: 120, fill: [0.9, 0.9, 1] },
-    { t: 'text', text: 'Inside the panel', x: 70, y: 480, size: 11 },
-    { t: 'text', text: 'Also inside it', x: 70, y: 430, size: 11 },
-    { t: 'image', x: 350, y: 380, w: 150, h: 150 },
-    { t: 'text', text: 'Touching A', x: 60, y: 300, size: 10 },
-    { t: 'text', text: 'Touching B', x: 112, y: 300, size: 10 },
   ]);
   const m = await modelOf(bytes);
   const tracked = find(m, 'Tracked');
@@ -99,16 +90,6 @@ test('character spacing is measured from the characters; vertical text is editab
   assert.equal(v.locked, null);
   assert.equal(v.writingMode, 'vertical-rl');
   assert.ok(v.source.axis! > 0 && Math.abs(v.frame.x1 - v.source.axis! - 500) < 0.5, `axis ${v.source.axis}`);
-
-  const inside = find(m, 'Inside the panel');
-  assert.ok(inside.source.panel, 'the panel is recorded');
-  assert.ok(Math.abs(inside.source.panel!.x0 - 50) < 1 && Math.abs(inside.source.panel!.y1 - 520) < 1);
-  assert.ok(m.panels.length >= 1);
-  assert.ok(m.obstacles.some((r) => Math.abs(r.x0 - 350) < 1 && Math.abs(r.y1 - 530) < 1), JSON.stringify(m.obstacles));
-
-  // two boxes on one baseline whose frames meet are neighbours (when detection keeps them apart)
-  const a = find(m, 'Touching A'), b = find(m, 'Touching B');
-  if (a !== b) assert.ok(a.source.neighbours.includes(b.id) && b.source.neighbours.includes(a.id));
 });
 
 test('rotated text is locked as rotated; buildDoc covers every page', async () => {

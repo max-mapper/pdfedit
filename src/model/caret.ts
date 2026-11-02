@@ -96,7 +96,7 @@ export function lineOf(lines: CaretLine[], pos: CaretPos, affinity: Affinity = '
   return 0;
 }
 
-/** The caret for a position: a segment in PDF space (horizontal: x0 = x1; vertical: y0 = y1). */
+/** The caret for a position: a bar in PDF space (horizontal text: x0 = x1; vertical: y0 = y1). */
 export function caretRect(lines: CaretLine[], pos: CaretPos, affinity: Affinity = 'down'): { x0: number; y0: number; x1: number; y1: number; line: number } | null {
   if (!lines.length) return null;
   const i = lineOf(lines, pos, affinity);

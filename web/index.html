@@ -28,8 +28,6 @@
   .frame.locked { border-color: #9995; background: repeating-linear-gradient(45deg, #9991 0 4px, transparent 4px 8px); cursor: not-allowed; }
   .frame.second { outline: 2px solid #f9ab00; }
   .frame.vertical { cursor: vertical-text; }
-  .picture { position: absolute; box-sizing: border-box; pointer-events: none; }
-  .picture.moved { outline: 1.5px dashed #e8710a; outline-offset: 2px; }
   #editbox { position: absolute; box-sizing: border-box; outline: 1.5px solid var(--accent); pointer-events: auto; }
   #editbox.overflow { outline-color: #d93025; }
   /* the text input (web/textinput.ts): a hidden textarea; the caret and the selection are drawn from the layout */
@@ -73,7 +71,6 @@
     <button id="split" title="Split the box at the caret">split</button>
     <button id="merge" title="Merge the shift-clicked box into this one">merge</button>
     <button id="show" aria-pressed="false" title="Show the input text over the preview">input</button>
-    <button id="fit" title="Fit every edited box on this page: widen, grow, single leading, shrink to 70%; what still does not fit is listed">fit page</button>
   </div>
   <div class="group">
     <button id="undo" disabled title="Undo (Ctrl+Z)">undo</button>

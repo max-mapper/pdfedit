@@ -1,6 +1,6 @@
 // Font choices for export:
 //   (a) which Unicode values a document's own font can show (from its ToUnicode CMap), so export can say whether an
-//       edited run could have stayed in the document font (for translated text it rarely can);
+//       edited run could have stayed in the document font (for new text in another script it rarely can);
 //   (b) which shipped face substitutes for a run (Noto Sans / Noto Sans JP, 400 or 700; serif and italic are not
 //       shipped, so they fall back to the upright sans and are flagged);
 //   (c) resolving a FontRef naming a shipped face to a loaded Face, one Face per id so FontWriter shares fonts.

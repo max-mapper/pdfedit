@@ -1,6 +1,6 @@
-// Compound undo steps over the Editor's stack: "fit all edited pages" (one fitPage per page) and "clear the box's
-// text" (one setText per paragraph) are each one step for the user. A group is remembered by the stack length at its
-// end; undoing it undoes every edit in it, and redoing redoes them all.
+// Compound undo steps over the Editor's stack: "clear the box's text" (one setText per paragraph) is one step for the
+// user. A group is remembered by the stack length at its end; undoing it undoes every edit in it, and redoing redoes
+// them all.
 import type { Editor } from '../src/model/edit.ts';
 
 export class History {

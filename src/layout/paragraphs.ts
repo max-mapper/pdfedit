@@ -161,7 +161,7 @@ function shortThenIndent(P: Open, L: LineRec, lines: LineRec[], th: Thresholds):
 
 /** A bulleted Japanese line that ends well short of the measure is a title: Japanese wraps at the full measure, so
  *  the line after it starts the item's description (its own paragraph), not a continuation. Only for a bullet item's
- *  first line: hand-broken headings and table cells stay one paragraph for translation. */
+ *  first line: hand-broken headings and table cells stay one paragraph for editing. */
 function bulletTitle(P: Open, L: LineRec, lines: LineRec[], th: Thresholds): boolean {
   if (P.bullet === null || P.lines.length !== 1) return false;
   const Q = lines[P.lines[0]];

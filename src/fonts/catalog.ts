@@ -4,7 +4,7 @@
 // scripts/fetch-fonts.ts into fonts/, never at run time).
 //
 // Every family here is TrueType-outline (glyf), because export writes CIDFontType2 / FontFile2 only (PDFium has no
-// FontFile3 path), and every licence allows embedding a subset in a PDF. No file is fetched from a font service at
+// FontFile3 path), and every licence allows a subset of it in a PDF. No file is fetched from a font service at
 // run time: the app serves the files from its own origin.
 //
 // Pure data and small helpers: no I/O, so the browser bundle and Node can both import it.
@@ -320,7 +320,7 @@ export const CATALOG: Family[] = [
     id: 'kosugi-maru', name: 'Kosugi Maru', classification: 'rounded', scripts: ['jpan', 'latn'], pitch: 'proportional',
     licence: 'Apache-2.0', licenceSrc: g('apache/kosugimaru/LICENSE.txt'), tier: 'extended',
     files: [{ file: 'KosugiMaru-Regular.ttf', src: g('apache/kosugimaru/KosugiMaru-Regular.ttf'), bytes: 3565716, weight: 400, italic: false }],
-    note: 'One weight; small. Apache 2.0 (embedding allowed; keep the licence and NOTICE with redistributed files).',
+    note: 'One weight; small. Apache 2.0 (subsets in PDFs allowed; keep the licence and NOTICE with redistributed files).',
   },
   {
     id: 'klee-one', name: 'Klee One', classification: 'script', scripts: ['jpan', 'latn'], pitch: 'proportional',

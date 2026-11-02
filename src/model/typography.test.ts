@@ -122,7 +122,7 @@ test('a description under a wider bulleted title shares its box and keeps its in
   assert.ok(near(d.leading, 1.4, 0.02) && d.spaceBefore < 0.5, `leading ${d.leading}, spaceBefore ${d.spaceBefore}`);
   const ed = new Editor({ pages: [m] }, fonts);
   ed.setText(0, b.id, 0, 'A long bold title for the first item, now in English and somewhat longer than before');
-  ed.setText(0, b.id, 1, 'A shorter description below it, which the translation makes considerably longer, so that it wraps ' +
+  ed.setText(0, b.id, 1, 'A shorter description below it, which an edit makes considerably longer, so that it wraps ' +
     'onto several lines underneath the title with recommendations and considerations.');
   const laid = layoutBox(ed.box(0, b.id), fonts);
   for (const l of laid.lines.filter((x) => x.para === 1)) assert.ok(near(lineX(laid, l), 84), `description line at ${lineX(laid, l)}`);
@@ -167,7 +167,7 @@ test('setText takes the dominant style, not a small coloured first run; a bold "
   const q = para('', {});
   q.runs = [run('概要：', { bold: true, color: [0.1, 0.3, 0.8] }), run('この段落の本文は通常の太さで書かれています。', {})];
   const b = box('b0', { x0: 50, x1: 300, y0: 600, y1: 700 }, [p, q]);
-  const ed = new Editor({ pages: [{ n: 0, w: 595, h: 842, boxes: [b], panels: [], obstacles: [] }] }, fonts);
+  const ed = new Editor({ pages: [{ n: 0, w: 595, h: 842, boxes: [b] }] }, fonts);
   ed.setText(0, 'b0', 0, 'A detailed description of the first item.');
   const r = b.paragraphs[0].runs;
   assert.equal(r.length, 1);

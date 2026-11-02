@@ -1,16 +1,14 @@
 // The editor over a Doc: every change is an Edit on an undo stack, marks its box edited (export rewrites only edited
-// boxes) and invalidates the box's layout. Pure TypeScript: the UI, the fitter and headless export use it.
+// boxes) and invalidates the box's layout. Pure TypeScript: the UI and headless export use it.
 //
 // Typing and dragging pass { merge: true }: an edit that continues the one on top of the stack (same kind, page,
 // box, paragraph) is folded into it, so one undo takes back a burst of keystrokes or one drag.
 //
 // Two ways to change text: setText (a paragraph's new text in its dominant style, with the character spacing reset:
-// translation, the fitter, clearing) and editText (the editor's typing: the box's paragraph texts after a keystroke,
+// replacing a paragraph, clearing) and editText (the editor's typing: the box's paragraph texts after a keystroke,
 // applied as a diff, so untouched characters keep their runs and inserted ones take the style next to them; a change
 // in the number of paragraphs, Enter or a deletion across a paragraph break, is one 'paras' edit).
 import type { FontRegistry } from './fonts.ts';
-import { fitPage as runFit, type FitOptions, type FitReport } from '../fit/fit.ts';
-import { layoutBox } from './layout.ts';
 import { substituteRef } from './fonts.ts';
 import { LEAD_END, dominantRun, styleKeyOf } from './style.ts';
 import { LayoutCache } from './layout.ts';
@@ -257,9 +255,8 @@ export class Editor {
     const nb: Box = {
       ...clone(box), id, paragraphs: clone(tail).map(withoutSource), frame: nbFrame,
       edited: true, heightPinned: false,
-      source: { ...clone(box.source), baseline: undefined, axis: undefined, neighbours: [...box.source.neighbours, box.id] },
+      source: { ...clone(box.source), baseline: undefined, axis: undefined },
     };
-    if (!box.source.neighbours.includes(id)) box.source.neighbours.push(id);
     pg.boxes.splice(pg.boxes.indexOf(box) + 1, 0, nb);
     const orderAfter = pg.boxes.map((b) => b.id);
     this.push({ kind: 'split', page, boxes: [boxId, id], before, after: [clone(box), clone(nb)], order, orderAfter }, [box, nb]);
@@ -279,43 +276,17 @@ export class Editor {
     const s = A.source, t = B.source;
     A.source = {
       ...s,
-      frame: unionRect(s.frame, t.frame), lines: s.lines + t.lines, paragraphs: [...s.paragraphs, ...t.paragraphs],
+      frame: unionRect(s.frame, t.frame), paragraphs: [...s.paragraphs, ...t.paragraphs],
       objs: [...new Set([...s.objs, ...t.objs])].sort((x, y) => x - y),
       chars: [...new Set([...s.chars, ...t.chars])].sort((x, y) => x - y),
-      panel: s.panel ?? t.panel,
-      neighbours: [...new Set([...s.neighbours, ...t.neighbours])].filter((x) => x !== a && x !== b),
     };
     A.edited = true;
     A.heightPinned = A.heightPinned && B.heightPinned;
     pg.boxes.splice(pg.boxes.indexOf(B), 1);
-    for (const x of pg.boxes) {
-      const k = x.source.neighbours.indexOf(b);
-      if (k >= 0) { x.source.neighbours.splice(k, 1); if (x !== A && !x.source.neighbours.includes(a)) x.source.neighbours.push(a); }
-    }
     this.invalidate(page, a);
     this.invalidate(page, b);
     const orderAfter = pg.boxes.map((x) => x.id);
     this.push({ kind: 'merge', page, boxes: [a, b], before, after: [clone(A)], order, orderAfter }, [A]);
-  }
-
-  /** Fit every edited box of the page (src/fit/fit.ts) as one undoable step: frames, sizes, leading and picture
-   *  moves are snapshotted before and after. */
-  fitPage(page: number, opts: FitOptions = {}): FitReport {
-    const pg = this.page(page);
-    if (!this.fonts) throw new Error('editor: fitPage needs the font registry');
-    const order = pg.boxes.map((b) => b.id);
-    const before = pg.boxes.map((b) => clone(b));
-    const pics = () => (pg.pictures ?? []).map((p) => ({ id: p.id, move: p.move ? { ...p.move } : undefined }));
-    const picturesBefore = pics();
-    const fonts = this.fonts;
-    const report = runFit(pg, (b) => layoutBox(b, fonts), opts);
-    const after = pg.boxes.map((b) => clone(b));
-    for (const b of pg.boxes) this.invalidate(page, b.id);
-    const ids = pg.boxes.map((b) => b.id);
-    this.undoStack.push({ kind: 'fit', page, boxes: ids, before, after, order, orderAfter: ids, picturesBefore, picturesAfter: pics() });
-    this.redoStack = [];
-    this.changed(page, ids, this.undoStack[this.undoStack.length - 1], 'do');
-    return report;
   }
 
   // ── undo / redo ──────────────────────────────────────────────────────────
@@ -372,10 +343,6 @@ export class Editor {
       for (const b of restore) map.set(b.id, clone(b));
       const ids = fwd ? (e.orderAfter ?? []) : (e.order ?? []);
       pg.boxes = ids.map((id) => map.get(id)).filter((b): b is Box => !!b);
-      if (e.kind === 'fit') {
-        const snap = fwd ? e.picturesAfter : e.picturesBefore;
-        for (const p of pg.pictures ?? []) { const m = snap?.find((x) => x.id === p.id); p.move = m?.move ? { ...m.move } : undefined; }
-      }
       const touched = [...new Set([...e.boxes, ...restore.map((b) => b.id)])];
       for (const id of touched) this.invalidate(e.page, id);
       this.changed(e.page, touched, e, how);

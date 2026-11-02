@@ -1,5 +1,5 @@
 // pdfedit, the standalone editor: every page of a PDF in a scrolling view with thumbnails and zoom, editable text
-// boxes detected per page when it is first shown, a typography panel, fit, undo/redo across pages and export.
+// boxes detected per page when it is first shown, a typography panel, undo/redo across pages and export.
 //
 // Threads: the worker (app/worker.ts) holds PDFium: it renders, detects and builds each page's model, and runs
 // exports. This thread holds the model (src/model Editor), lays boxes out with HarfBuzz in the shipped faces and draws
@@ -16,20 +16,17 @@
 // edits makes one export; a commit overtaken by a newer edit is skipped or ignored.
 import { faceGroups, catalogLabel } from './fontpicker.ts';
 import { prepareSubstitutes } from '../src/fonts/apply.ts';
-import { configureCatalog, loadAppFonts, oflUrl } from './assets.ts';
-import { Embed, embedParams, hostFonts } from './embed.ts';
+import { loadAppFonts, oflUrl } from './assets.ts';
 import type { FontRegistry } from '../src/model/fonts.ts';
 import { substituteRef, hasCjk, parseCatalogFaceId } from '../src/model/fonts.ts';
 import { Editor, type Change, type StylePatch } from '../src/model/edit.ts';
 import { TextInput } from '../web/textinput.ts';
-import { caretLines, hitTest, selectionRects } from '../src/model/caret.ts';
 import type { Box, Doc, FontRef, LaidBox, Page, Rect } from '../src/model/types.ts';
-import type { FitReport } from '../src/fit/fit.ts';
 import type { ExportReport } from '../src/export/export.ts';
-import { drawnRect, movedPictures } from '../web/preview.ts';
+import { drawnRect } from '../web/preview.ts';
 import { Overlay, type OverlayMode } from './overlay.ts';
 import { History } from './history.ts';
-import { exportReportView, fitReportView, h } from './reports.ts';
+import { exportReportView, h } from './reports.ts';
 import type { CommitResult, Req, Res } from './protocol.ts';
 
 // ── constants ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -52,18 +49,12 @@ const editbox = $<HTMLDivElement>('editbox');
 const ta = $<HTMLTextAreaElement>('ta');
 const caretEl = $<HTMLDivElement>('caret');
 const selLayer = $<HTMLDivElement>('selrects');
-// embed mode: each segment's range of a linked box, tinted, with its boundaries marked, while the box is edited (a
-// layer of the edit box: the page and the export never see it)
-const segLayer = document.createElement('div');
-segLayer.id = 'segrects';
-selLayer.before(segLayer);
 const fileInput = $<HTMLInputElement>('file');
 const ui = {
   open: $<HTMLButtonElement>('open'), open2: $<HTMLButtonElement>('open2'), docname: $<HTMLSpanElement>('docname'),
   zoomOut: $<HTMLButtonElement>('zoom-out'), zoomIn: $<HTMLButtonElement>('zoom-in'), zoomSel: $<HTMLSelectElement>('zoom-sel'),
   fitWidth: $<HTMLButtonElement>('fit-width'), fitPageZoom: $<HTMLButtonElement>('fit-page'),
   undo: $<HTMLButtonElement>('undo'), redo: $<HTMLButtonElement>('redo'),
-  fitThis: $<HTMLButtonElement>('fit-this'), fitAll: $<HTMLButtonElement>('fit-all'),
   export: $<HTMLButtonElement>('export'), download: $<HTMLAnchorElement>('download'),
   typo: $<HTMLElement>('typo'), scope: $<HTMLDivElement>('scope'), paraN: $<HTMLSpanElement>('para-n'),
   font: $<HTMLSelectElement>('font'), fontNote: $<HTMLDivElement>('font-note'), size: $<HTMLInputElement>('size'),
@@ -73,18 +64,12 @@ const ui = {
   spaceBefore: $<HTMLInputElement>('space-before'), spaceAfter: $<HTMLInputElement>('space-after'), indent: $<HTMLInputElement>('indent'),
   bx: $<HTMLInputElement>('bx'), by: $<HTMLInputElement>('by'), bw: $<HTMLInputElement>('bw'), bh: $<HTMLInputElement>('bh'),
   pin: $<HTMLInputElement>('pin'), split: $<HTMLButtonElement>('split'), merge: $<HTMLButtonElement>('merge'), boxinfo: $<HTMLParagraphElement>('boxinfo'),
-  fitBody: $<HTMLDivElement>('fit-body'), exportBody: $<HTMLDivElement>('export-body'),
+  exportBody: $<HTMLDivElement>('export-body'),
   pageno: $<HTMLInputElement>('pageno'), pagecount: $<HTMLSpanElement>('pagecount'), stZoom: $<HTMLSpanElement>('st-zoom'),
   stDetect: $<HTMLSpanElement>('st-detect'), stEdits: $<HTMLSpanElement>('st-edits'), stCommit: $<HTMLSpanElement>('st-commit'),
   stMsg: $<HTMLSpanElement>('st-msg'), dropmask: $<HTMLDivElement>('dropmask'),
 };
 $<HTMLAnchorElement>('ofl').href = oflUrl;
-
-// ── embed mode (app/embed.ts): ?doc=<id>&api=<base> loads, saves and exports through a host; ?fonts=<base> serves the
-// substitution catalogue from the host. Without them, nothing below differs from the standalone editor.
-const embedArgs = embedParams(location.href);
-const fontsBase = hostFonts(location.href);
-configureCatalog(fontsBase);
 
 // ── fonts: the registry for layout (the caret is drawn from the layout: no CSS faces are needed) ────────────
 const fontsReady: Promise<FontRegistry> = loadAppFonts();
@@ -110,12 +95,10 @@ type PageView = {
   committed: { id: number; rects: Map<string, Rect>; ids: Set<string> } | null;
   inflight: { id: number; version: number; rects: Map<string, Rect>; ids: Set<string> } | null;
   refused: Map<string, string>; failures: string[]; timer: number;
-  fit: FitReport | null;
 };
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 const send = (m: Req, t: Transferable[] = []) => worker.postMessage(m, t);
-if (fontsBase) send({ kind: 'fonts', base: fontsBase });
 let fonts: FontRegistry | null = null;
 let doc: Doc | null = null;
 let editor: Editor | null = null;
@@ -135,7 +118,6 @@ let globalVersion = 0, exportedVersion = -1;
 let exportPending = 0;
 let pendingExportVersion = -1;
 let downloadUrl: string | null = null;
-let lastFit: FitReport[] = [];
 let lastExport: { report: ExportReport | null; error: string | null; bytes: number } | null = null;
 const stats = { reflows: [] as number[], commits: 0, commitMs: [] as number[] };
 
@@ -148,17 +130,6 @@ const findBox = (n: number, id: string) => pageOf(n)?.boxes.find((b) => b.id ===
 const paraText = (b: Box, i: number) => b.paragraphs[i].runs.map((r) => r.text).join('');
 const msg = (s: string) => { ui.stMsg.textContent = s; ui.stMsg.title = s; };
 
-const embed: Embed | null = embedArgs && !('error' in embedArgs) ? new Embed(embedArgs, {
-  open: (bytes, name) => openBytes(bytes, name),
-  fonts: () => fonts, doc: () => doc, editor: () => editor, version: () => globalVersion,
-  reveal: (n, id) => {
-    scrollToPage(n);
-    if (select(n, id)) editbox.scrollIntoView({ block: 'center', inline: 'nearest' });
-    else if (!findBox(n, id)) msg(`${id} is no longer on page ${n + 1}.`);
-  },
-  msg, refresh: () => updatePanel(),
-}) : null;
-
 function scaleFor(v: PageView): number {
   return Math.min(Z() * DPR, Math.sqrt(MAX_PIXELS / (v.w * v.h)));
 }
@@ -166,15 +137,12 @@ function scaleFor(v: PageView): number {
 // ── opening a file ──────────────────────────────────────────────────────────────────────────────────────────
 async function openFile(f: File) {
   if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { msg(`${f.name} is not a PDF.`); return; }
-  openBytes(await f.arrayBuffer(), f.name);
-}
-
-function openBytes(bytes: ArrayBuffer, name: string) {
   reset();
-  fileName = name;
-  ui.docname.textContent = name;
-  ui.docname.title = name;
+  fileName = f.name;
+  ui.docname.textContent = f.name;
+  ui.docname.title = f.name;
   msg('Opening…');
+  const bytes = await f.arrayBuffer();
   send({ kind: 'open', bytes }, [bytes]);
 }
 
@@ -185,12 +153,11 @@ function reset() {
   pagesEl.replaceChildren();
   thumbsEl.replaceChildren();
   doc = null; editor = null; history = null;
-  lastFit = []; lastExport = null;
+  lastExport = null;
   globalVersion = 0; exportedVersion = -1;
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   downloadUrl = null;
   ui.download.hidden = true;
-  ui.fitBody.replaceChildren(h('p', { class: 'muted' }, 'No fit run yet.'));
   ui.exportBody.replaceChildren(h('p', { class: 'muted' }, 'Not exported yet.'));
 }
 
@@ -200,14 +167,13 @@ ui.open2.addEventListener('click', () => fileInput.click());
 
 let dragDepth = 0;
 const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-window.addEventListener('dragenter', (e) => { if (embed || !hasFiles(e)) return; e.preventDefault(); dragDepth++; ui.dropmask.hidden = false; });
-window.addEventListener('dragleave', (e) => { if (embed || !hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; ui.dropmask.hidden = true; } });
+window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; ui.dropmask.hidden = false; });
+window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; ui.dropmask.hidden = true; } });
 window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   ui.dropmask.hidden = true;
-  if (embed) { msg('This editor opens its document from the host page.'); return; }
   const f = [...(e.dataTransfer?.files ?? [])].find((x) => /\.pdf$/i.test(x.name) || x.type === 'application/pdf');
   if (f) openFile(f); else msg('Drop a PDF file.');
 });
@@ -228,12 +194,6 @@ worker.onmessage = async (e: MessageEvent<Res>) => {
     syncZoomUi();
     viewer.scrollTop = 0;
     msg(`${m.sizes.length} page${m.sizes.length === 1 ? '' : 's'} opened in ${m.ms} ms. Click a box to select it, double-click to edit.`);
-    if (embed) {
-      // every page is detected up front (one at a time, so renders slip in between) and made ready by the embed
-      for (const v of views) v.modelAsked = true;
-      embed.opened(views.length);
-      requestModel(0);
-    }
     updateAll();
     requestAnimationFrame(() => { for (const v of views) ensureRender(v); });
   } else if (m.kind === 'render') {
@@ -278,48 +238,14 @@ worker.onmessage = async (e: MessageEvent<Res>) => {
     const c = v.thumbCanvas;
     c.width = m.width; c.height = m.height;
     c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
-  } else if (m.kind === 'model') {
-    onModel(m);
   } else if (m.kind === 'committed') {
     onCommitted(m);
   } else if (m.kind === 'exported') {
     onExported(m);
   } else if (m.kind === 'error') {
     msg(`Error (${m.context}): ${m.message}`);
-    if (embed && m.context === 'model' && modelNext >= 0) { const n = modelNext; requestModel(n + 1); embed.pageDone(n, true); }
   }
 };
-
-// ── embed mode: every page's model, made ready (translated, saved boxes back, fitted) before it is shown ──────
-let modelNext = -1;
-function requestModel(n: number) {
-  modelNext = n < views.length ? n : -1;
-  if (modelNext >= 0) send({ kind: 'model', n });
-}
-
-async function onModel(m: Extract<Res, { kind: 'model' }>) {
-  const v = views[m.n];
-  if (m.n === modelNext) requestModel(m.n + 1);
-  if (!v || !doc || !embed || doc.pages[m.n]) return;
-  let fit: FitReport | null = null;
-  try { fit = await embed.preparePage(m.page); } catch (err) { msg(`Page ${m.n + 1}: ${(err as Error).message}`); }
-  doc.pages[m.n] = m.page;
-  v.detectMs = m.detectMs;
-  v.chars = m.chars;
-  v.fit = fit;
-  buildFrames(v);
-  const edited = m.page.boxes.filter((b) => b.edited);
-  if (edited.length) {
-    // translated or saved boxes: the page commits like an edited one once it is on screen (ensureRender)
-    v.version++;
-    for (const b of edited) v.dirty.add(b.id);
-    if (v.visible) scheduleCommit(v, IDLE_MS);
-  }
-  paint(v);
-  (window as unknown as { __detected: number }).__detected = ((window as unknown as { __detected?: number }).__detected ?? 0) + 1;
-  embed.pageDone(m.n);
-  updateAll();
-}
 
 // ── pages and thumbnails ────────────────────────────────────────────────────────────────────────────────────
 let pageObserver: IntersectionObserver | null = null;
@@ -364,7 +290,7 @@ function buildViews(sizes: { w: number; h: number }[]) {
       visible: false, thumbVisible: false, seen: 0, orig: null, commit: null, wantOrig: 0, wantCommit: 0, modelAsked: false,
       overlay: null, mode: null, frameDivs: new Map(), detectMs: null, chars: 0,
       version: 0, committedVersion: 0, dirty: new Set(), structural: false, committed: null, inflight: null,
-      refused: new Map(), failures: [], timer: 0, fit: null,
+      refused: new Map(), failures: [], timer: 0,
     };
     pageObserver!.observe(el);
     thumbObserver!.observe(thumb);
@@ -392,7 +318,6 @@ function ensureRender(v: PageView) {
     v.wantCommit = s;
     send({ kind: 'render', req: ++reqSeq, n: v.n, scale: s, source: 'commit', commitId: v.committed.id, model: false });
   }
-  if (embed && doc.pages[v.n] && v.version !== v.committedVersion && !v.inflight && !v.timer) scheduleCommit(v, IDLE_MS);
 }
 
 function requestThumb(v: PageView) {
@@ -441,8 +366,8 @@ function paint(v: PageView) {
   v.base.getContext('2d')!.putImageData(bmp.img, 0, 0);
   const focused = (b: Box) => sel?.page === v.n && sel.id === b.id;
   const mode: OverlayMode = commitMode
-    ? { include: (b) => (b.edited && (v.dirty.has(b.id) || v.refused.has(b.id))) || focused(b), extra: (id) => v.committed?.rects.get(id), pictures: false }
-    : { include: (b) => b.edited || focused(b), extra: () => undefined, pictures: true };
+    ? { include: (b) => (b.edited && (v.dirty.has(b.id) || v.refused.has(b.id))) || focused(b), extra: (id) => v.committed?.rects.get(id) }
+    : { include: (b) => b.edited || focused(b), extra: () => undefined };
   v.overlay = new Overlay(v.over, bmp.img, { k: bmp.img.width / v.w, h: v.h }, mode);
   const page = pageOf(v.n);
   if (page && editor) v.overlay.drawAll(page, laidFn(v.n));
@@ -468,11 +393,6 @@ function buildFrames(v: PageView) {
   v.frames.replaceChildren();
   v.frameDivs.clear();
   if (!page) return;
-  for (const { pic, to } of movedPictures(page)) {
-    const d = h('div', { class: 'picture', title: `${pic.id} (${pic.kind}) moved by the fitter` });
-    placePct(d, v, to);
-    v.frames.append(d);
-  }
   for (const b of page.boxes) {
     const d = h('div', { class: 'frame', 'data-id': b.id }) as HTMLDivElement;
     v.frameDivs.set(b.id, d);
@@ -486,17 +406,15 @@ function updateFrame(v: PageView, b: Box) {
   if (!d || !editor) return;
   const L = b.edited ? laidFn(v.n)(b) : null;
   placePct(d, v, L ? L.frame : b.frame);
-  const unfit = v.fit?.boxes.find((x) => x.box === b.id && x.result === 'unfit');
   const refused = v.refused.get(b.id);
   d.classList.toggle('edited', b.edited);
   d.classList.toggle('locked', !!b.locked);
   d.classList.toggle('overflow', !!L?.overflow);
-  d.classList.toggle('unfit', !!unfit);
   d.classList.toggle('refused', !!refused);
   d.classList.toggle('second', sel?.page === v.n && b.id === second);
   d.hidden = sel?.page === v.n && sel.id === b.id;
   let badge = d.querySelector<HTMLSpanElement>('.badge');
-  const text = refused ? `export refused: ${refused}` : unfit ? `unfit: about ${unfit.charsOver} characters over` : '';
+  const text = refused ? `export refused: ${refused}` : '';
   if (text) {
     if (!badge) { badge = h('span', { class: 'badge' }) as HTMLSpanElement; d.append(badge); }
     badge.textContent = text;
@@ -575,49 +493,7 @@ function placeEditbox() {
     el.title = k.split('').map((c1) => titles[c1]?.[vertical ? 1 : 0]).filter(Boolean).join(' · ');
   }
   drawCaret();
-  drawSegments();
 }
-
-/** Embed mode, while a linked box is edited: every segment range tinted (alternating per paragraph; read-only ranges
- *  hatched) and a thin mark where a range starts after another. */
-function drawSegments() {
-  segLayer.replaceChildren();
-  if (!embed || !editing || !sel || !editor || !fonts) return;
-  const b = findBox(sel.page, sel.id);
-  const ranges = b ? embed.rangesOf(sel.page, sel.id) : [];
-  if (!b || !ranges.length) return;
-  const L = laidFn(sel.page)(b);
-  const lines = caretLines(L, b);
-  const z = Z();
-  const css = (r: Rect) => ({ left: (r.x0 - L.frame.x0) * z, top: (L.frame.y1 - r.y1) * z, width: (r.x1 - r.x0) * z, height: (r.y1 - r.y0) * z });
-  for (const r of ranges) {
-    const rects = r.end > r.start ? selectionRects(lines, { para: r.para, off: r.start }, { para: r.para, off: r.end }) : [];
-    rects.forEach((q, k) => {
-      const c = css(q);
-      const d = h('div', { class: `segr ${r.index % 2 ? 'seg-b' : 'seg-a'}${r.typable ? '' : ' ro'}`, 'data-seg': r.seg, 'data-para': String(r.para) });
-      Object.assign(d.style, { left: `${c.left}px`, top: `${c.top}px`, width: `${c.width}px`, height: `${c.height}px` });
-      segLayer.append(d);
-      if (k === 0 && r.index > 0) {
-        const m = h('div', { class: 'segb', 'data-seg': r.seg });
-        Object.assign(m.style, b.vertical ? { left: `${c.left}px`, top: `${c.top - 1}px`, width: `${c.width}px`, height: '2px' }
-          : { left: `${c.left - 1}px`, top: `${c.top}px`, width: '2px', height: `${c.height}px` });
-        segLayer.append(m);
-      }
-    });
-  }
-}
-
-/** The pointer over the edit box: the segment under it is named (tooltip and panel). */
-editbox.addEventListener('pointermove', (e) => {
-  if (!embed || !sel || !editor || !fonts) return;
-  const b = findBox(sel.page, sel.id), v = views[sel.page];
-  if (!b || !v) return;
-  const pr = v.el.getBoundingClientRect(), z = Z();
-  const hit = hitTest(caretLines(laidFn(sel.page)(b), b), (e.clientX - pr.left) / z, v.h - (e.clientY - pr.top) / z);
-  const tip = hit ? embed.pointAt(sel.page, sel.id, hit.para, hit.off, 'hover') : '';
-  if (tip) editbox.title = tip; else editbox.removeAttribute('title');
-});
-editbox.addEventListener('pointerleave', () => { if (embed && sel) embed.pointAt(sel.page, sel.id, 0, null, 'hover'); editbox.removeAttribute('title'); });
 
 // ── the text input (web/textinput.ts): a hidden textarea; the caret and the selection drawn from the laid glyphs ──
 const input = new TextInput({
@@ -639,30 +515,12 @@ const input = new TextInput({
   },
   edit: (texts, merge) => {
     if (!editor || !sel) return;
-    if (!textEdit(sel.page, sel.id, texts, merge)) input.sync();   // refused: the text box shows the model again
-  },
-  // embed mode: an input that would break a segment link is refused before it changes anything
-  guard: (x) => {
-    const b = embed && sel ? findBox(sel.page, sel.id) : undefined;
-    const why = b && embed ? embed.refuseInput(sel!.page, b, x) : null;
-    if (why) msg(why);
-    return !why;
+    const t0 = performance.now();
+    editor.editText(sel.page, sel.id, texts, { merge });   // onChange lays out, redraws and syncs the input
+    stats.reflows.push(performance.now() - t0);
   },
   onPara: (i) => { focusPara = i; updatePanel(); },
-  onCaret: (p) => { if (embed && sel) embed.pointAt(sel.page, sel.id, p.para, p.off, 'caret'); },
 });
-
-/** A typed edit of a box's paragraph texts, through the embed's gate. False when it was refused (the reason shown). */
-function textEdit(page: number, id: string, texts: string[], merge = false): boolean {
-  const b = findBox(page, id);
-  if (!editor || !b) return false;
-  const why = embed?.refuseText(page, b, texts) ?? null;
-  if (why) { msg(why); return false; }
-  const t0 = performance.now();
-  editor.editText(page, id, texts, { merge });   // onChange lays out, redraws and syncs the input
-  stats.reflows.push(performance.now() - t0);
-  return true;
-}
 const drawCaret = () => input.draw();
 
 function startEditing(x?: number, y?: number) {
@@ -681,9 +539,7 @@ function stopEditing() {
   editbox.classList.remove('editing');
   input.stop();
   placeEditbox();
-  if (embed && sel) embed.pointAt(sel.page, sel.id, 0, null, 'hover');
   if (sel) flushCommit(sel.page);
-  embed?.editingEnded();
   updateStatus();
 }
 
@@ -778,14 +634,13 @@ function onChange(c: Change) {
   if (c.how === 'do') history?.onDo();
   if (!v) return;
   const page = pageOf(c.page)!;
-  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge' || c.edit.kind === 'fit';
+  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge';
   v.version++;
   for (const id of c.boxes) v.dirty.add(id);
   if (structural) v.structural = true;
-  if (c.edit.kind === 'fit' && c.how === 'undo') v.fit = null;
   if (v.inflight) send({ kind: 'invalidate', n: v.n, version: v.version });
   scheduleCommit(v, IDLE_MS);
-  // draw: incrementally when the base stays, from scratch when it switches (committed ↔ original) or on a fit
+  // draw: incrementally when the base stays, from scratch when it switches (committed ↔ original) or on a split or merge
   const want = useCommit(v) ? 'commit' : 'orig';
   if (v.overlay && want === v.mode && !structural) v.overlay.redraw(page, c.boxes, laidFn(c.page));
   else paint(v);
@@ -801,7 +656,6 @@ function onChange(c: Change) {
     }
   }
   if (c.how !== 'do' && c.page !== current && !views[c.page].visible) scrollToPage(c.page);
-  embed?.changed(c);
   updatePanel();
   updateStatus();
 }
@@ -898,11 +752,7 @@ function updateAll() { updatePanel(); updateStatus(); }
 function updatePanel() {
   ui.undo.disabled = !editor?.canUndo;
   ui.redo.disabled = !editor?.canRedo;
-  const anyEdited = !!doc && doc.pages.some((p) => p?.boxes.some((b) => b.edited));
-  ui.fitAll.disabled = !anyEdited;
-  ui.fitThis.disabled = !pageOf(sel?.page ?? current)?.boxes.some((b) => b.edited);
-  ui.export.disabled = !doc || exportPending > 0 || (!!embed && !embed.canExport);
-  embed?.selection(sel?.page ?? null, sel?.id ?? null);
+  ui.export.disabled = !doc || exportPending > 0;
   if (!sel || !editor || !fonts) { ui.typo.setAttribute('aria-disabled', 'true'); return; }
   const b = findBox(sel.page, sel.id);
   if (!b) return;
@@ -954,12 +804,8 @@ function updatePanel() {
   ui.pin.checked = b.heightPinned;
   ui.merge.disabled = !second;
   ui.merge.textContent = second ? `Merge ${second}` : 'Merge';
-  const linked = !!embed?.isLinked(sel.page, b.id);
-  ui.split.title = linked ? 'This box is linked to segments: it cannot be split here' : 'Split the box at the caret (or before the focused paragraph)';
-  ui.merge.title = linked ? 'This box is linked to segments: it cannot be merged here' : 'Merge the shift-clicked box into this one';
-  const unfit = views[sel.page]?.fit?.boxes.find((x) => x.box === b.id && x.result === 'unfit');
   ui.boxinfo.textContent = `${b.id} · ${b.kind}${b.vertical ? ' · vertical' : ''} · ${b.paragraphs.length} paragraph${b.paragraphs.length === 1 ? '' : 's'}` +
-    (b.edited ? ' · edited' : '') + (L.overflow ? ' · text overflows' : '') + (unfit ? ` · unfit by about ${unfit.charsOver} characters` : '') +
+    (b.edited ? ' · edited' : '') + (L.overflow ? ' · text overflows' : '') +
     (views[sel.page]?.refused.get(b.id) ? ` · export refused: ${views[sel.page].refused.get(b.id)}` : '');
 }
 
@@ -1059,8 +905,6 @@ ui.split.addEventListener('click', () => {
   const b = findBox(sel.page, sel.id);
   if (!b) return;
   const at = input.pos?.para === focusPara ? input.pos.off : null;
-  const why = embed?.refuseStructure(sel.page, [sel.id], 'split');
-  if (why) { msg(why); return; }
   try {
     let id: string | null = null;
     if (at !== null && at > 0 && at < paraText(b, focusPara).length) id = editor.splitBox(sel.page, sel.id, focusPara, at);
@@ -1072,8 +916,6 @@ ui.split.addEventListener('click', () => {
 });
 ui.merge.addEventListener('click', () => {
   if (!editor || !sel || !second) return;
-  const why = embed?.refuseStructure(sel.page, [sel.id, second], 'merge');
-  if (why) { msg(why); return; }
   try { const s = second; editor.mergeBoxes(sel.page, sel.id, s); second = null; msg(`${s} merged into ${sel.id}.`); } catch (err) { msg(String((err as Error).message)); }
 });
 ui.undo.addEventListener('click', () => history?.undo());
@@ -1085,8 +927,6 @@ function clearText() {
   const b = findBox(sel.page, sel.id);
   if (!b) return;
   const { page, id } = sel;
-  const why = embed?.refuseStructure(page, [id], 'clear');
-  if (why) { msg(why); return; }
   input.breakMerge();
   history.group(() => b.paragraphs.forEach((_, i) => editor!.setText(page, id, i, '')));
   msg(`Text of ${id} cleared (Ctrl+Z brings it back).`);
@@ -1103,29 +943,6 @@ function nudge(dx: number, dy: number) {
   editor.setFrame(sel.page, sel.id, { x0: f.x0 + dx, x1: f.x1 + dx, y0: f.y0 + dy, y1: f.y1 + dy }, { merge });
 }
 
-// ── fit ─────────────────────────────────────────────────────────────────────────────────────────────────────
-function runFit(pages: number[]) {
-  if (!editor || !history) return;
-  if (editing) stopEditing();
-  const ed = editor;
-  const reports = history.group(() => pages.map((n) => ed.fitPage(n)));
-  for (const r of reports) { const v = views[r.page]; if (v) { v.fit = r; updateFrames(v); } }
-  lastFit = reports;
-  ui.fitBody.replaceChildren(fitReportView(reports));
-  const unfit = reports.reduce((k, r) => k + r.boxes.filter((b) => b.result === 'unfit').length, 0);
-  msg(`Fit ${reports.length} page${reports.length === 1 ? '' : 's'}: ${unfit ? `${unfit} box${unfit === 1 ? '' : 'es'} still unfit (outlined in red)` : 'everything fits'}.`);
-  (window as unknown as { __fit: FitReport[] }).__fit = reports;
-  updatePanel();
-}
-ui.fitThis.addEventListener('click', () => {
-  const n = sel?.page ?? current;
-  if (!pageOf(n)?.boxes.some((b) => b.edited)) { msg(`Nothing is edited on page ${n + 1}.`); return; }
-  runFit([n]);
-});
-ui.fitAll.addEventListener('click', () => {
-  if (!doc) return;
-  runFit(doc.pages.map((p, n) => (p?.boxes.some((b) => b.edited) ? n : -1)).filter((n) => n >= 0));
-});
 const reportClick = (e: Event) => {
   const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-box]');
   if (!b) return;
@@ -1133,14 +950,12 @@ const reportClick = (e: Event) => {
   scrollToPage(n);
   select(n, b.dataset.box!);
 };
-ui.fitBody.addEventListener('click', reportClick);
 ui.exportBody.addEventListener('click', reportClick);
 
 // ── export ──────────────────────────────────────────────────────────────────────────────────────────────────
-ui.export.addEventListener('click', async () => {
+ui.export.addEventListener('click', () => {
   if (!doc) return;
   if (editing) stopEditing();
-  if (embed && !(await embed.beforeExport())) return;   // unsaved edits are saved first: the export names its version
   exportPending = ++exportSeq;
   exportedVersion = -1;
   const at = globalVersion;
@@ -1172,7 +987,6 @@ function onExported(m: Extract<Res, { kind: 'exported' }>) {
     msg(r?.ok ? `Exported: ${r.pages.reduce((k, p) => k + p.written.length, 0)} boxes written, verified.` : `Export finished with problems: ${r?.failures[0] ?? m.error}`);
   } else msg(`Export failed: ${m.report?.failures[0] ?? m.error ?? 'unknown error'}`);
   updateAll();
-  if (embed) void embed.exported(m.bytes, m.report, m.error);
 }
 
 // ── zoom and scrolling ──────────────────────────────────────────────────────────────────────────────────────
@@ -1299,9 +1113,7 @@ const debug = {
   get ready() { return !!editor && views.length > 0; },
   get doc() { return doc; }, get editor() { return editor; }, get zoom() { return zoom; }, get selected() { return sel; },
   get editing() { return editing; }, get current() { return current; }, stats,
-  get lastFit() { return lastFit; },
   get lastExport() { return lastExport; },
-  get embed() { return embed?.debug ?? null; },
   get downloadName() { return ui.download.hidden ? null : ui.download.download; },
   pageState: (n: number) => (views[n] ? pageState(views[n]) : null),
   rendered: (n: number) => {
@@ -1319,23 +1131,6 @@ const debug = {
     return { pos, anchor, focus, rect: { x: r.left, y: r.top, w: r.width, h: r.height }, hidden: caretEl.hidden };
   },
   select: (n: number, id: string) => select(n, id),
-  /** Ends editing as leaving the box does: pending segment edits are written (write-through). */
-  endEditing: () => { stopEditing(); embed?.editingEnded(); },
-  /** A typed edit through the embed's gates (false: refused). */
-  textEdit: (n: number, id: string, texts: string[]) => textEdit(n, id, texts),
-  /** An input as the text box would send it (embed gate first), applied as the textarea would apply it. */
-  input: (n: number, id: string, x: { type: string; data: string | null; start: number; end: number }) => {
-    const b = findBox(n, id);
-    if (!b) return 'no box';
-    const why = embed?.refuseInput(n, b, x) ?? null;
-    if (why) { msg(why); return why; }
-    const t = TextInput.textOf(b);
-    let a = Math.min(x.start, x.end), z = Math.max(x.start, x.end);
-    if (a === z && x.type === 'deleteContentBackward') a = Math.max(0, a - 1);
-    if (a === z && x.type === 'deleteContentForward') z = Math.min(t.length, z + 1);
-    const next = t.slice(0, a) + (x.data ?? '') + t.slice(z);
-    return textEdit(n, id, next.split('\n').map((p) => p.split('\u2028').join('\n'))) ? null : 'refused';
-  },
   /** Client-space rectangle of a page rectangle (for real mouse events). */
   clientRect: (n: number, r: Rect) => {
     const v = views[n];
@@ -1374,5 +1169,3 @@ const debug = {
 (window as unknown as { __app: typeof debug }).__app = debug;
 syncZoomUi();
 updateAll();
-if (embed) { embed.mount(); void embed.load(); }
-else if (embedArgs && 'error' in embedArgs) msg(`Embed mode is off: ${embedArgs.error}.`);

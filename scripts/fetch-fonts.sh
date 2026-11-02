@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Noto fonts (SIL OFL 1.1) for substitution and embedding. TrueType outlines only (PDF FontFile2).
+# Noto fonts (SIL OFL 1.1) for substitution and for subsets in exported PDFs. TrueType outlines only (PDF FontFile2).
 set -euo pipefail
 cd "$(dirname "$0")/../fonts"
 get() { [ -s "$1" ] || curl -fsSL -o "$1" "$2"; }

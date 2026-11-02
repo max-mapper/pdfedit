@@ -13,7 +13,7 @@ import { LayoutCache } from '../src/model/layout.ts';
 import type { FontRegistry } from '../src/model/fonts.ts';
 import type { Doc, Page } from '../src/model/types.ts';
 import { ExportError, exportDoc, type ExportOptions, type ExportReport } from '../src/export/export.ts';
-import { configureCatalog, loadAppFonts } from './assets.ts';
+import { loadAppFonts } from './assets.ts';
 import type { CommitResult, Req, Res } from './protocol.ts';
 
 const P = fetch(wasmUrl).then((r) => r.arrayBuffer()).then((wasmBinary) => openPdfium({ wasmBinary }));
@@ -116,7 +116,6 @@ async function exportAll(m: Extract<Req, { kind: 'export' }>): Promise<void> {
 
 self.onmessage = async (e: MessageEvent<Req>) => {
   const m = e.data;
-  if (m.kind === 'fonts') { configureCatalog(m.base); return; }   // before any font is loaded
   try {
     const pdfium = await P;
     if (m.kind === 'open') {
@@ -157,15 +156,6 @@ self.onmessage = async (e: MessageEvent<Req>) => {
       try {
         const bmp = pg.render(m.scale);
         post({ kind: 'thumb', n: m.n, source: m.source, rgba: bmp.rgba.buffer, width: bmp.width, height: bmp.height }, [bmp.rgba.buffer]);
-      } finally { pg.close(); }
-    } else if (m.kind === 'model') {
-      if (!doc) { post({ kind: 'error', message: 'no document is open', context: 'model' }); return; }
-      const pg = doc.page(m.n);
-      try {
-        const t1 = performance.now();
-        const input = readPage(pg);
-        const page = buildPageFrom(m.n, input, detectBoxes(input));
-        post({ kind: 'model', n: m.n, page, chars: input.chars.length, objs: input.textObjects.length, detectMs: Math.round(performance.now() - t1) });
       } finally { pg.close(); }
     } else if (m.kind === 'invalidate') {
       minVersion.set(m.n, Math.max(minVersion.get(m.n) ?? 0, m.version));

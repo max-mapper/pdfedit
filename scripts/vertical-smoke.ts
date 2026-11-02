@@ -1,4 +1,4 @@
-// The editor on vertical text and moved pictures, headless. Builds a synthetic page with the text layer
+// The editor on vertical text, headless. Builds a synthetic page with the text layer
 // (src/layout/testkit.ts: two Identity-V columns of synthetic Japanese, Helvetica paragraphs) plus an orange image, serves
 // dist-web (build it first: npx vite build web --config web/vite.config.ts --outDir ../dist-web --emptyOutDir), opens
 // it in headless Chromium and:
@@ -8,8 +8,8 @@
 //   2. compares the preview's ink inside the laid frame with PDFium's render of what export writes for the same
 //      model (done here in Node with the same fonts), over the whole box and around the sideways glyphs;
 //   3. drags the vertical box's bottom handle: the column length changes, the height stays unpinned;
-//   4. types into the paragraph beside the image and presses "fit page": the fitter moves the image; the preview
-//      draws it at its new frame (orange there, masked where it was) with a dashed outline; undo and redo follow.
+//   4. types into the paragraph beside the image: the text reflows in its own box's width; the image and the other
+//      boxes stay where they are (the preview keeps the image's orange in place).
 // Nothing may load from another host.
 //   node scripts/vertical-smoke.ts [out.pdf]
 // SHOT=<file.png> saves a screenshot of the page after step 4. Playwright from PW_CORE, Chromium from CHROME (default: the one Playwright installed).
@@ -41,7 +41,7 @@ const src = await (async () => {
     { t: 'vtext', text: '縦書きの文章です。', x: 300, yTop: 500, size: 12 },
     { t: 'vtext', text: '二行目の文字列', x: 285, yTop: 500, size: 12 },
     { t: 'text', text: LABEL, x: 100, y: 702, size: 10 },
-    { t: 'text', text: 'Another paragraph below that blocks growth.', x: 100, y: 670, size: 10 },
+    { t: 'text', text: 'Another paragraph below it.', x: 100, y: 670, size: 10 },
   ]);
   const png = new PNG({ width: 4, height: 4 });
   for (let i = 0; i < 16; i++) png.data.set([...ORANGE, 255], i * 4);
@@ -65,7 +65,7 @@ const server = createServer(async (req, res) => {
 await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
-type W = { __rendered?: unknown; __editor?: any; __fit?: any };
+type W = { __rendered?: unknown; __editor?: any };
 const text = (b: { paragraphs: { runs: { text: string }[] }[] }) => b.paragraphs.map((p) => p.runs.map((r) => r.text).join('')).join('\n');
 const blocked = new Set<string>();
 const checks: Record<string, boolean> = {};
@@ -244,18 +244,24 @@ try {
     out.resize = { columnLongerBy: +longer.toFixed(2), columnsBefore: before.cols, columnsAfter: res.cols, pinned: res.pinned, editboxH: res.editboxH, frameH: res.frameH };
   }
 
-  // ── 4. fit page moves the image; the preview draws it there ─────────────────────────────────────────────────
+  // ── 4. typing beside the image: the box reflows in its own width; nothing else moves ──────────────────────────
   {
+    const frames = () => page.evaluate(() => {
+      const E = (window as W).__editor;
+      return E.doc.pages[0].boxes.map((b: { id: string; frame: Rect }) => ({ id: b.id, frame: { ...b.frame } }));
+    });
     const lab = await page.evaluate((label: string) => {
       const E = (window as W).__editor;
       const b = E.doc.pages[0].boxes.find((x: { paragraphs: { runs: { text: string }[] }[] }) => x.paragraphs[0].runs[0].text.startsWith(label.slice(0, 10)));
       E.select(b.id);
       return b.id;
     }, LABEL);
+    const before = await frames();
     await page.keyboard.type(', now a good deal longer in English than it was before, so it needs room');
-    await page.click('#fit');
-    // the share of a rectangle the picture's orange covers, as the user sees it (the preview over the page bitmap)
-    const orange = (r: Rect) => `((r, C) => {
+    const after = await frames();
+    // the share of the image's frame (inset) the orange covers, as the user sees it (the preview over the page bitmap)
+    const inset: Rect = { x0: 314, x1: 426, y0: 604, y1: 716 };
+    const orange = await page.evaluate(`((r, C) => {
       const E = window.__editor, cv = document.getElementById('preview'), vw = document.getElementById('view');
       const k = cv.width / E.doc.pages[0].w, H = E.doc.pages[0].h;
       const x = Math.floor(r.x0 * k), y = Math.floor((H - r.y1) * k), w = Math.ceil((r.x1 - r.x0) * k), h = Math.ceil((r.y1 - r.y0) * k);
@@ -266,36 +272,17 @@ try {
         n++; if (px.every((v, c) => Math.abs(v - C[c]) < 40)) g++;
       }
       return +(g / n).toFixed(3);
-    })(${JSON.stringify(r)}, ${JSON.stringify(ORANGE)})`;
-    const fit = await page.evaluate(() => {
-      const w = window as W, E = w.__editor;
-      const pics = (E.doc.pages[0].pictures ?? []).filter((p: { move?: unknown }) => p.move);
-      const outline = document.querySelectorAll('#frames .picture.moved');
-      const d = outline[0] as HTMLElement | undefined;
-      return { boxes: (w.__fit?.boxes ?? []).map((x: { box: string; result: string; actions: string[] }) => `${x.box} ${x.result} ${x.actions.join('+')}`), report: w.__fit?.pictures ?? [], moved: pics.map((p: { id: string; move: unknown }) => ({ id: p.id, move: p.move })),
-        outlines: outline.length, outlineStyle: d ? getComputedStyle(d).outlineStyle : null, log: document.getElementById('log')!.textContent };
-    });
-    const rp = fit.report[0] as { from: Rect; to: Rect } | undefined;
-    let newOnly = NaN, oldOnly = NaN, undone = NaN, undoneOutlines = -1, redone = NaN;
-    if (rp) {
-      // a strip of the new frame outside the old one, and a strip of the old frame outside the new one
-      const nf = rp.to, of = rp.from;
-      const newStrip = nf.y0 < of.y0 ? { x0: nf.x0 + 4, x1: nf.x1 - 4, y0: nf.y0 + 2, y1: Math.min(nf.y1, of.y0) - 2 } : { x0: nf.x0 + 4, x1: nf.x1 - 4, y0: Math.max(nf.y0, of.y1) + 2, y1: nf.y1 - 2 };
-      const oldStrip = nf.y0 < of.y0 ? { x0: of.x0 + 4, x1: of.x1 - 4, y0: Math.max(of.y0, nf.y1) + 2, y1: of.y1 - 2 } : { x0: of.x0 + 4, x1: of.x1 - 4, y0: of.y0 + 2, y1: Math.min(of.y1, nf.y0) - 2 };
-      newOnly = await page.evaluate(orange(newStrip));
-      oldOnly = await page.evaluate(orange(oldStrip));
-      if (process.env.SHOT) await page.locator('#stage').screenshot({ path: process.env.SHOT });
-      await page.keyboard.press('Escape');
-      await page.keyboard.press('Control+z');
-      undone = await page.evaluate(orange(newStrip));
-      undoneOutlines = await page.evaluate(() => document.querySelectorAll('#frames .picture.moved').length);
-      await page.keyboard.press('Control+Shift+z');
-      redone = await page.evaluate(orange(newStrip));
-    }
-    checks.pictureMoved = fit.moved.length === 1 && fit.report.length === 1 && fit.outlines === 1 && fit.outlineStyle === 'dashed';
-    checks.picturePreview = newOnly > 0.95 && oldOnly < 0.01;
-    checks.pictureUndo = undone < 0.01 && undoneOutlines === 0 && redone > 0.95;
-    out.picture = { box: lab, ...fit, orangeInNewStrip: newOnly, orangeInOldStrip: oldOnly, afterUndo: { orangeInNewStrip: undone, outlines: undoneOutlines }, afterRedo: { orangeInNewStrip: redone } };
+    })(${JSON.stringify(inset)}, ${JSON.stringify(ORANGE)})`) as number;
+    const laid = await page.evaluate((id: string) => { const L = (window as W).__editor.laid(id); return { frame: { ...L.frame }, lines: L.lines.length, overflow: L.overflow }; }, lab);
+    const moved = after.filter((a: { id: string; frame: Rect }) => {
+      const b = before.find((x: { id: string }) => x.id === a.id);
+      return !b || ['x0', 'x1', 'y0', 'y1'].some((k) => Math.abs((a.frame as Record<string, number>)[k] - (b.frame as Record<string, number>)[k]) > 1e-6);
+    }).map((a: { id: string }) => a.id);
+    const own = before.find((x: { id: string }) => x.id === lab)!.frame as Rect;
+    if (process.env.SHOT) await page.locator('#stage').screenshot({ path: process.env.SHOT });
+    checks.typingStaysInBox = moved.length === 0 && Math.abs(laid.frame.x0 - own.x0) < 1e-6 && Math.abs(laid.frame.x1 - own.x1) < 1e-6 && laid.lines > 1;
+    checks.imageInPlace = orange > 0.95;
+    out.typing = { box: lab, framesMoved: moved, laid, orangeInImage: orange };
   }
 
   const ok = Object.values(checks).every(Boolean) && !errors.length && !blocked.size;

@@ -1,5 +1,4 @@
-// The fit and export reports, rendered as DOM (no innerHTML with model text: box text and reasons are set as text).
-import type { FitReport } from '../src/fit/fit.ts';
+// The export report, rendered as DOM (no innerHTML with model text: box text and reasons are set as text).
 import type { ExportReport } from '../src/export/export.ts';
 
 type Child = Node | string | null | undefined | false;
@@ -14,41 +13,6 @@ export function h(tag: string, attrs: Record<string, string> = {}, ...kids: Chil
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-
-/** The fit reports of one run (one per page fitted). Unfit boxes are buttons with data-page / data-box. */
-export function fitReportView(reports: FitReport[]): HTMLElement {
-  const root = h('div', { class: 'report' });
-  if (!reports.length) { root.append(h('p', { class: 'muted' }, 'Nothing was fitted: no page has edited boxes.')); return root; }
-  const all = reports.flatMap((r) => r.boxes);
-  const fitted = all.filter((b) => b.result === 'fixed').length;
-  const fits = all.filter((b) => b.result === 'fits').length;
-  const unfit = all.filter((b) => b.result === 'unfit');
-  const pics = reports.reduce((n, r) => n + r.pictures.length, 0);
-  root.append(h('p', { class: unfit.length ? 'banner warn' : 'banner ok' },
-    `${plural(all.length, 'edited box', 'edited boxes')}: ${fitted} fitted, ${fits} already fit, ${unfit.length} unfit` +
-    (pics ? `, ${plural(pics, 'picture')} moved or shrunk` : '') + '.'));
-  for (const r of reports) {
-    const sec = h('div', { class: 'rep-page' }, h('h4', {}, `Page ${r.page + 1}`, h('span', { class: 'muted' }, ` · ${r.ms} ms`)));
-    const ul = h('ul');
-    for (const b of r.boxes) {
-      const what = b.result === 'unfit' ? `unfit, about ${b.charsOver} characters over` :
-        b.result === 'fixed' ? `fitted (${b.actions.join(', ') || 'no change'}${b.scale < 0.999 ? `, ${Math.round(b.scale * 100)}%` : ''})` : 'fits as it is';
-      const btn = h('button', { class: `link ${b.result}`, 'data-page': String(r.page), 'data-box': b.box, title: 'Select this box' }, b.box);
-      ul.append(h('li', { class: b.result }, btn, ` ${what}`));
-    }
-    sec.append(ul);
-    if (r.pictures.length) {
-      const pl = h('ul');
-      for (const p of r.pictures) {
-        pl.append(h('li', { class: 'moved' }, `picture ${p.id} for ${p.box}: moved ${p.dx.toFixed(1)}, ${p.dy.toFixed(1)} pt` +
-          (Math.abs(p.scale - 1) > 1e-6 ? `, scaled ${Math.round(p.scale * 100)}%` : '')));
-      }
-      sec.append(h('p', { class: 'muted' }, 'Pictures (outlined on the page):'), pl);
-    }
-    root.append(sec);
-  }
-  return root;
-}
 
 /** The export report: what was written, what was skipped and why, and the verification. */
 export function exportReportView(report: ExportReport | null, error: string | null): HTMLElement {
@@ -78,8 +42,7 @@ export function exportReportView(report: ExportReport | null, error: string | nu
     const sec = h('div', { class: 'rep-page' }, h('h4', {}, `Page ${p.page + 1}`));
     const v = p.verify;
     sec.append(h('p', {}, `${plural(p.written.length, 'box', 'boxes')} written, ${p.skipped.length} skipped, ` +
-      `${plural(p.operatorsBlanked, 'operator')} blanked` + (p.operatorsSplit ? `, ${p.operatorsSplit} split` : '') +
-      (p.picturesMoved?.length ? `, ${plural(p.picturesMoved.length, 'picture')} moved` : '') + '.'));
+      `${plural(p.operatorsBlanked, 'operator')} blanked` + (p.operatorsSplit ? `, ${p.operatorsSplit} split` : '') + '.'));
     if (v) {
       const okText = v.text.filter((t) => t.newPresent).length;
       const oldGone = v.text.filter((t) => t.oldAbsent === true).length;
@@ -96,10 +59,9 @@ export function exportReportView(report: ExportReport | null, error: string | nu
     const sk = skipped.filter((s) => s.page === p.page);
     if (sk.length) {
       const ul = h('ul', { class: 'skipped' });
-      for (const s of sk) ul.append(h('li', {}, h('button', { class: 'link unfit', 'data-page': String(s.page), 'data-box': s.box }, s.box), ` skipped: ${s.reason}`));
+      for (const s of sk) ul.append(h('li', {}, h('button', { class: 'link bad', 'data-page': String(s.page), 'data-box': s.box }, s.box), ` skipped: ${s.reason}`));
       sec.append(h('p', {}, 'Skipped:'), ul);
     }
-    for (const s of p.picturesSkipped ?? []) sec.append(h('p', { class: 'bad-text' }, `picture ${s.id} not moved: ${s.reason}`));
     root.append(sec);
   }
   return root;

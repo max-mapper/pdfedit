@@ -151,7 +151,7 @@ type Item = {
   ins?: boolean;
 };
 
-type Segment = { items: Item[]; forced: boolean };
+type Chunk = { items: Item[]; forced: boolean };
 
 const EPS = 1e-6;
 let rules: Rules | null = null;
@@ -185,7 +185,7 @@ function layoutHorizontal(para: ParaIn, pi: number, W: number, opts: LayoutOptio
   const leading = para.leading ?? opts.leading ?? 1.2;
   const P = runs.map((r) => r.text).join('');
   const items = buildItems(runs, P, opts.features, false);
-  const segments = segment(items, P);
+  const chunks = chunksOf(items, P);
 
   // the marker: its own run (index runs.length), shaped alone
   const marker = para.marker && para.marker.run.text ? para.marker : null;
@@ -218,7 +218,7 @@ function layoutHorizontal(para: ParaIn, pi: number, W: number, opts: LayoutOptio
   const avoidWidow = para.avoidWidow ?? opts.avoidWidows ?? false;
   const hyphenOf = hyphenItems(runs);
   const run = (scale: (li: number) => number, justify: boolean) =>
-    breakLines(segments, P, { width: (li) => measure(li) * scale(li), hyphenate, justify, hyphenOf });
+    breakLines(chunks, P, { width: (li) => measure(li) * scale(li), hyphenate, justify, hyphenOf });
 
   let alignUsed: Align = align;
   let br = run(() => 1, align === 'justify');
@@ -342,8 +342,8 @@ type BreakCtx = {
   hyphenOf: (run: number) => Item | null;
 };
 
-/** Greedy line filling over the break segments, with per-line measures and optional hyphenation. */
-function breakLines(segments: Segment[], P: string, ctx: BreakCtx): Broken {
+/** Greedy line filling over the break chunks, with per-line measures and optional hyphenation. */
+function breakLines(chunks: Chunk[], P: string, ctx: BreakCtx): Broken {
   const raw: RawLine[] = [];
   let cur: Item[] = [];
   let curSum = 0;
@@ -373,8 +373,8 @@ function breakLines(segments: Segment[], P: string, ctx: BreakCtx): Broken {
     if (!spaces.length) return left > 0.1 * W;
     return left / spaces.length > 0.5 * spaces[0].adv;
   };
-  // the head of a segment up to a hyphenation point, with a hyphen, that fits in `room`; the rest as a segment
-  const split = (seg: Segment, body: Item[], room: number): { head: Item[]; tail: Segment } | null => {
+  // the head of a chunk up to a hyphenation point, with a hyphen, that fits in `room`; the rest as a chunk
+  const split = (seg: Chunk, body: Item[], room: number): { head: Item[]; tail: Chunk } | null => {
     if (!body.length || body.some((it) => it.orient !== 'h')) return null;
     const start = body[0].cluster;
     const text = body.filter((it) => it.clusterStart).map((it) => it.text).join('');
@@ -393,7 +393,7 @@ function breakLines(segments: Segment[], P: string, ctx: BreakCtx): Broken {
     }
     return null;
   };
-  const queue = [...segments];
+  const queue = [...chunks];
   for (let si = 0; si < queue.length; si++) {
     const seg = queue[si];
     const body = withoutTrailingWs(seg.items);
@@ -544,7 +544,7 @@ export function layoutSourceLines(para: ParaIn, src: SourceParaIn, opts: LayoutO
   if (map.matched < 0.5 * P.length) return null;
   const leading = para.leading ?? opts.leading ?? 1.2;
   const items = buildItems(runs, P, opts.features, vertical);
-  const segs = segment(items, P);
+  const segs = chunksOf(items, P);
   const S = src.starts.length;
   const oldEnd = (k: number) => (k + 1 < S ? src.starts[k + 1] : src.text.length);
   const srcLineOf = (o: number) => { let lo = 0, hi = S - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (src.starts[m] <= o) lo = m; else hi = m - 1; } return lo; };
@@ -785,7 +785,7 @@ function layoutOne(para: ParaIn, pi: number, W: number, opts: LayoutOptions, top
   const leading = para.leading ?? opts.leading ?? 1.2;
   const P = runs.map((r) => r.text).join('');
   const items = buildItems(runs, P, opts.features, vertical);
-  const segments = segment(items, P);
+  const chunks = chunksOf(items, P);
 
   type RawLine = { items: Item[]; forced: boolean; overflow: boolean; lastRun: number };
   const raw: RawLine[] = [];
@@ -809,7 +809,7 @@ function layoutOne(para: ParaIn, pi: number, W: number, opts: LayoutOptions, top
   // width of `cur` followed by `tail` (non-empty, no trailing whitespace): its last glyph's charSpacing excluded
   const widthWith = (tail: Item[]) => curSum + sum(tail) - tail[tail.length - 1].cs;
 
-  for (const seg of segments) {
+  for (const seg of chunks) {
     const body = withoutTrailingWs(seg.items);
     if (seg.items.length) lastRun = seg.items[seg.items.length - 1].run;
     if (cur.length && body.length && widthWith(body) > W + EPS) flush(false);
@@ -1013,8 +1013,8 @@ function buildItems(runs: RunIn[], P: string, features: string[] | undefined, ve
   return items;
 }
 
-/** Break opportunities, kinsoku-filtered and restricted to cluster boundaries; items cut into segments. */
-function segment(items: Item[], P: string): Segment[] {
+/** Break opportunities, kinsoku-filtered and restricted to cluster boundaries; items cut into chunks. */
+function chunksOf(items: Item[], P: string): Chunk[] {
   rules ??= new Rules();
   const boundaries = new Set(items.filter((it) => it.clusterStart).map((it) => it.cluster));
   const breaks: { pos: number; required: boolean }[] = [];
@@ -1029,7 +1029,7 @@ function segment(items: Item[], P: string): Segment[] {
     }
     breaks.push({ pos, required: b.required });
   }
-  const segs: Segment[] = [];
+  const segs: Chunk[] = [];
   let bi = 0;
   let cur: Item[] = [];
   for (const it of items) {

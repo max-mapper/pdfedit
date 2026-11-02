@@ -5,13 +5,8 @@
 //
 // Vertical boxes are drawn as export writes them (src/text/emit.ts): upright glyphs from their horizontal origin as
 // in horizontal text; sideways glyphs under the text matrix `0 -1 1 0 x y`, rotated 90° clockwise about their origin.
-//
-// Pictures the fitter moved (Picture.move, applied by src/export/pictures.ts) are drawn at their new frame: the old
-// frame masked with the colour sampled around it, and the picture's pixels copied from the page bitmap's old frame
-// into the new one, scaled. They are drawn under the boxes (masks, then pictures, then box masks and text).
 import type { Face } from '../src/text/face.ts';
-import type { Box, LaidBox, Page, Picture, Rect } from '../src/model/types.ts';
-import { movedFrame } from '../src/fit/pictures.ts';
+import type { Box, LaidBox, Page, Rect } from '../src/model/types.ts';
 
 export type View = {
   /** Canvas pixels per PDF point. */
@@ -88,27 +83,12 @@ export function sampleBackground(img: ImageData, view: View, r: Rect): string {
   return `rgb(${med(R)}, ${med(G)}, ${med(B)})`;
 }
 
-/** The pictures of a page the fitter moved or shrank, with their new frames. */
-export function movedPictures(page: Page): { pic: Picture; to: Rect }[] {
-  return (page.pictures ?? []).filter((p) => p.move && (Math.abs(p.move.dx) > 1e-3 || Math.abs(p.move.dy) > 1e-3 ||
-    Math.abs(p.move.scale - 1) > 1e-6)).map((pic) => ({ pic, to: movedFrame(pic) }));
-}
-
-/** The rectangle hiding a moved picture where it was: its frame with a margin for antialiased edges. */
-export function pictureMaskRect(p: Picture): Rect {
-  const f = p.frame;
-  return { x0: f.x0 - 0.75, y0: f.y0 - 0.75, x1: f.x1 + 0.75, y1: f.y1 + 0.75 };
-}
-
 export class Preview {
   private ctx: CanvasRenderingContext2D;
   private view: View;
   private drawn = new Map<string, Rect>();
   private maskColour = new Map<string, string>();
   private bitmap: ImageData;
-  private source: OffscreenCanvas | null = null;   // the page bitmap as a drawImage source (pictures)
-  /** What the moved pictures cover (old frames and new), so a box redraw over them draws them again. */
-  private picRects: Rect[] = [];
   /** The selected box: drawn too (the editor draws a box as soon as it has the focus, so the caret and the outline
    *  follow what is drawn). Redraw it after changing this. */
   focused: string | null = null;
@@ -126,9 +106,6 @@ export class Preview {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, c.canvas.width, c.canvas.height);
     this.drawn.clear();
-    const pics = movedPictures(page);
-    this.picRects = pics.flatMap(({ pic, to }) => [pictureMaskRect(pic), to]);
-    this.pictures(pics);
     const edited = page.boxes.filter((b) => this.shows(b));
     const L = new Map(edited.map((b) => [b.id, laid(b)]));
     for (const b of edited) this.mask(b);
@@ -160,7 +137,6 @@ export class Preview {
     c.rect(px.x, px.y, pw, ph);
     c.clip();
     c.clearRect(px.x, px.y, pw, ph);
-    if (this.picRects.some((r) => meets(r, dirty!))) this.pictures(movedPictures(page));
     const hit = page.boxes.filter((b) => this.shows(b) && this.drawn.has(b.id) && meets(this.drawn.get(b.id)!, dirty!));
     for (const b of hit) this.mask(b);
     for (const b of hit) this.text(laid(b));
@@ -177,37 +153,6 @@ export class Preview {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = col;
     c.fillRect(r.x0 * k, (h - r.y1) * k, (r.x1 - r.x0) * k, (r.y1 - r.y0) * k);
-    c.restore();
-  }
-
-  /** Moved pictures: every old frame masked first, then every picture's pixels at its new frame. */
-  private pictures(pics: { pic: Picture; to: Rect }[]): void {
-    if (!pics.length) return;
-    const c = this.ctx, { k, h } = this.view;
-    c.save();
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    for (const { pic } of pics) {
-      const r = pictureMaskRect(pic);
-      const key = `pic:${pic.id}:${r.x0},${r.y0},${r.x1},${r.y1}`;
-      let col = this.maskColour.get(key);
-      if (!col) { col = sampleBackground(this.bitmap, this.view, r); this.maskColour.set(key, col); }
-      c.fillStyle = col;
-      // whole device pixels, one more on each side: PDFium's image edges are antialiased into the next pixel
-      const X0 = Math.floor(r.x0 * k) - 1, Y0 = Math.floor((h - r.y1) * k) - 1;
-      c.fillRect(X0, Y0, Math.ceil(r.x1 * k) + 1 - X0, Math.ceil((h - r.y0) * k) + 1 - Y0);
-    }
-    if (!this.source) {
-      this.source = new OffscreenCanvas(this.bitmap.width, this.bitmap.height);
-      this.source.getContext('2d')!.putImageData(this.bitmap, 0, 0);
-    }
-    c.imageSmoothingEnabled = true;
-    c.imageSmoothingQuality = 'high';
-    for (const { pic, to } of pics) {
-      const f = pic.frame;
-      const sx = f.x0 * k, sy = (h - f.y1) * k, sw = (f.x1 - f.x0) * k, sh = (f.y1 - f.y0) * k;
-      if (sw <= 0 || sh <= 0) continue;
-      c.drawImage(this.source, sx, sy, sw, sh, to.x0 * k, (h - to.y1) * k, (to.x1 - to.x0) * k, (to.y1 - to.y0) * k);
-    }
     c.restore();
   }
 

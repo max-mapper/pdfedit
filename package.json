@@ -3,13 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Client-side PDF text editor on PDFium (WebAssembly): render, detect paragraph boxes, edit and fit text, export real text objects.",
+  "description": "Client-side PDF text editor on PDFium (WebAssembly): render, detect paragraph boxes, edit text, export real text objects.",
   "license": "CC-BY-SA-4.0",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --test-timeout=120000 \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "test": "node --test --test-timeout=120000 \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "fonts": "bash scripts/fetch-fonts.sh",
     "web:dev": "vite web --port 5180",

@@ -1,5 +1,5 @@
 // The editor's document model. Built from detection (src/layout) and the engine (src/engine); edited
-// by the UI (web/) and the fitter; written back by export (src/export). Units: PDF points, y up.
+// by the UI (app/, web/); written back by export (src/export). Units: PDF points, y up.
 import type { Rect } from '../engine/pdfium.ts';
 import type { Face } from '../text/face.ts';
 
@@ -71,15 +71,12 @@ export type SourceLines = {
   size: number; leading: number; align: Paragraph['align']; indent: number;   // the style it was set in
 };
 
-/** What the page looked like before any edit: what the fitter measures against. */
+/** What the box looked like before any edit. */
 export type SourceState = {
   frame: Rect;             // the box as detected
-  lines: number;
   paragraphs: { text: string; size: number; align: string; leading: number }[];
   objs: number[];          // the page's text object indices that held this box's characters (export removes these)
   chars: number[];         // character indices
-  panel: Rect | null;      // the innermost panel it sits in
-  neighbours: string[];    // ids of boxes it touched in the source (touching them is not a new collision)
   /** Optional (src/model/build.ts fills them): */
   baseline?: number;       // distance from the source frame's top down to the first line's baseline, points
   charSpacing?: number;    // the source's measured character spacing (median over the box), points
@@ -90,7 +87,7 @@ export type SourceState = {
 export type Box = {
   id: string;
   kind: 'text' | 'cell' | 'label';
-  frame: Rect;             // current frame (moved/resized by the user or the fitter)
+  frame: Rect;             // current frame (moved/resized by the user)
   rot: 0 | 90 | 180 | 270;
   vertical: boolean;
   paragraphs: Paragraph[];
@@ -107,47 +104,18 @@ export type Page = {
   n: number;               // 0-based
   w: number; h: number;
   boxes: Box[];
-  panels: Rect[];
-  obstacles: Rect[];       // pictures and figures text must not grow over
-  /** Optional (src/model/build.ts fills them): straight rules (table rulings, underlines, dividers) and filled
-   *  rectangles (cells, chart bars, cards) that are not page backgrounds. The fitter keeps text from growing across
-   *  the ones a box did not touch in the source. */
-  rules?: Rect[];
-  fills?: Rect[];
-  /** Optional (src/model/build.ts fills it): the pictures among the obstacles that the fitter may move or shrink. */
-  pictures?: Picture[];
 };
-
-/**
- * A picture the fitter may move or shrink (shrunk by at most 25%, never cropped): an image object,
- * or a drawn figure that is one path object. Text on it, an outline drawn round it or another object over it keep
- * it fixed (it stays an obstacle only).
- */
-export type Picture = {
-  id: string;
-  kind: 'image' | 'figure';
-  frame: Rect;             // where it is in the source (page space); never changed
-  z: number;               // paint order (Shape.z)
-  objs: number[];          // indices into page.shapes()
-  move?: PictureMove;      // set by the fitter; export applies it
-};
-
-/** A picture's change: its new frame is { x0: frame.x0 + dx, y0: frame.y0 + dy } with width and height × scale, so
- *  dx and dy are the move of its bottom-left corner (a shrink toward another corner moves that corner too). */
-export type PictureMove = { dx: number; dy: number; scale: number };
 
 export type Doc = { pages: Page[]; title?: string };
 
-/** One edit, for undo/redo and for the fit report. */
+/** One edit, for undo/redo. */
 export type Edit =
   | { kind: 'text'; page: number; box: string; para: number; runs: Run[]; before: Run[]; wasEdited?: boolean }
   | { kind: 'style'; page: number; box: string; para: number | null; patch: Partial<Run> & Partial<Pick<Paragraph, 'align' | 'leading' | 'indent'>>; before: unknown; wasEdited?: boolean }
   | { kind: 'paras'; page: number; box: string; before: Paragraph[]; after: Paragraph[]; wasEdited?: boolean /* paragraphs added or removed */ }
   | { kind: 'frame'; page: number; box: string; frame: Rect; before: Rect; wasEdited?: boolean;
       pinned?: boolean; pinnedBefore?: boolean /* heightPinned after / before */ }
-  | { kind: 'split' | 'merge' | 'fit'; page: number; boxes: string[]; before: Box[];
-      picturesBefore?: { id: string; move: { dx: number; dy: number; scale: number } | undefined }[];
-      picturesAfter?: { id: string; move: { dx: number; dy: number; scale: number } | undefined }[];
+  | { kind: 'split' | 'merge'; page: number; boxes: string[]; before: Box[];
       after?: Box[]; order?: string[]; orderAfter?: string[] /* page box ids before / after, for undo and redo */ };
 
 /** A laid-out box: what the preview draws and export writes. Produced by src/model/layout.ts from a Box. */

@@ -1,11 +1,11 @@
 // The live preview over one page: edited boxes (and the selected box) drawn as the exact glyph outlines export writes (HarfBuzz glyphToPath)
 // over their masked source, as web/preview.ts does, with one addition for the commit re-render: the page's base
-// bitmap is either PDFium's render of the original (then every edited box and every moved picture is drawn) or the
+// bitmap is either PDFium's render of the original (then every edited box is drawn) or the
 // render of the page's committed export (then only the boxes changed since the commit, and boxes export refused,
 // are drawn; each one's mask also covers where the committed render drew it, `extra`).
 import type { Box, LaidBox, Page, Rect } from '../src/model/types.ts';
 import type { Face } from '../src/text/face.ts';
-import { drawnRect, maskRect, movedPictures, pictureMaskRect, sampleBackground, type View } from '../web/preview.ts';
+import { drawnRect, maskRect, sampleBackground, type View } from '../web/preview.ts';
 
 export type OverlayMode = {
   /** Which boxes the overlay draws (edited boxes, and the selected one: the editor draws a box as soon as it has the
@@ -13,8 +13,6 @@ export type OverlayMode = {
   include(b: Box): boolean;
   /** More area to mask for a box: where the committed render drew it. */
   extra(id: string): Rect | undefined;
-  /** Draw the fitter's moved pictures (the base is the original render). */
-  pictures: boolean;
 };
 
 const paths = new Map<number, Map<number, Path2D>>();
@@ -33,8 +31,6 @@ export class Overlay {
   private mode: OverlayMode;
   private drawn = new Map<string, Rect>();
   private colours = new Map<string, string>();
-  private picRects: Rect[] = [];
-  private source: OffscreenCanvas | null = null;
 
   constructor(canvas: HTMLCanvasElement, bitmap: ImageData, view: View, mode: OverlayMode) {
     this.ctx = canvas.getContext('2d')!;
@@ -63,9 +59,6 @@ export class Overlay {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, c.canvas.width, c.canvas.height);
     this.drawn.clear();
-    const pics = this.mode.pictures ? movedPictures(page) : [];
-    this.picRects = pics.flatMap(({ pic, to }) => [pictureMaskRect(pic), to]);
-    this.pictures(page);
     const boxes = this.shown(page);
     const L = new Map(boxes.map((b) => [b.id, laid(b)]));
     for (const b of boxes) this.mask(b);
@@ -97,7 +90,6 @@ export class Overlay {
     c.rect(px.x, px.y, pw, ph);
     c.clip();
     c.clearRect(px.x, px.y, pw, ph);
-    if (this.picRects.some((r) => meets(r, d))) this.pictures(page);
     const hit = this.shown(page).filter((b) => this.drawn.has(b.id) && meets(this.drawn.get(b.id)!, d));
     for (const b of hit) this.mask(b);
     for (const b of hit) this.text(laid(b));
@@ -128,34 +120,6 @@ export class Overlay {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = this.colour(`${b.id}:${r.x0},${r.y0},${r.x1},${r.y1}`, r);
     c.fillRect(r.x0 * k, (h - r.y1) * k, (r.x1 - r.x0) * k, (r.y1 - r.y0) * k);
-    c.restore();
-  }
-
-  private pictures(page: Page): void {
-    if (!this.mode.pictures) return;
-    const pics = movedPictures(page);
-    if (!pics.length) return;
-    const c = this.ctx, { k, h } = this.view;
-    c.save();
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    for (const { pic } of pics) {
-      const r = pictureMaskRect(pic);
-      c.fillStyle = this.colour(`pic:${pic.id}:${r.x0},${r.y0},${r.x1},${r.y1}`, r);
-      const X0 = Math.floor(r.x0 * k) - 1, Y0 = Math.floor((h - r.y1) * k) - 1;
-      c.fillRect(X0, Y0, Math.ceil(r.x1 * k) + 1 - X0, Math.ceil((h - r.y0) * k) + 1 - Y0);
-    }
-    if (!this.source) {
-      this.source = new OffscreenCanvas(this.bitmap.width, this.bitmap.height);
-      this.source.getContext('2d')!.putImageData(this.bitmap, 0, 0);
-    }
-    c.imageSmoothingEnabled = true;
-    c.imageSmoothingQuality = 'high';
-    for (const { pic, to } of pics) {
-      const f = pic.frame;
-      const sx = f.x0 * k, sy = (h - f.y1) * k, sw = (f.x1 - f.x0) * k, sh = (f.y1 - f.y0) * k;
-      if (sw <= 0 || sh <= 0) continue;
-      c.drawImage(this.source, sx, sy, sw, sh, to.x0 * k, (h - to.y1) * k, (to.x1 - to.x0) * k, (to.y1 - to.y0) * k);
-    }
     c.restore();
   }
 

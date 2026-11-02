@@ -44,13 +44,13 @@ export function boxOf(pr: PageRead, id: string, objs: number[], opts: { edited?:
     id, kind: 'text', frame, rot: 0, vertical: false,
     paragraphs: [{ runs: [{ text, font, size: 12, color: [0, 0, 0], charSpacing: 0, bold: false, italic: false, underline: false }],
       align: 'left', leading: 1.2, spaceBefore: 0, spaceAfter: 0, indent: 0, bullet: null }],
-    source: { frame, lines: 1, paragraphs: [{ text, size: 12, align: 'left', leading: 1.2 }], objs, chars: opts.noChars ? [] : chars, panel: null, neighbours: [] },
+    source: { frame, paragraphs: [{ text, size: 12, align: 'left', leading: 1.2 }], objs, chars: opts.noChars ? [] : chars },
     edited: opts.edited ?? false, locked: null, heightPinned: false,
   };
 }
 
 export function docOf(pages: { pr: PageRead; boxes: Box[] }[]): Doc {
-  return { pages: pages.map(({ pr, boxes }): Page => ({ n: pr.n, w: pr.w, h: pr.h, boxes, panels: [], obstacles: [] })) };
+  return { pages: pages.map(({ pr, boxes }): Page => ({ n: pr.n, w: pr.w, h: pr.h, boxes })) };
 }
 
 /** Lays `text` out in the box's frame width with src/text and returns it as a LaidBox (line x = frame left, glyph x

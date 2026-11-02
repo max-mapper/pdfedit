@@ -28,8 +28,8 @@
 // source broke and every glyph sits at its source character's x on the source baseline, and the frame stays the
 // source's, so selecting a box changes nothing but the face the glyphs are drawn in; once it is edited, lines whose
 // text is unchanged stay where they were and the rest reflow in the source's measure with the source's advances (see
-// layoutKeep and layoutKeepVertical). A size, leading, alignment, indent, font or spacing change (Editor.setStyle, the
-// fitter) leaves the source lines and the paragraph flows as described above.
+// layoutKeep and layoutKeepVertical). A size, leading, alignment, indent, font or spacing change (Editor.setStyle)
+// leaves the source lines and the paragraph flows as described above.
 //
 // Every line carries its text range (start, end), its pen end (pEnd) and each glyph its cluster offset (c) and pen
 // position (p): src/model/caret.ts places the caret and hit-tests clicks on them.

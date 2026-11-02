@@ -12,9 +12,8 @@ import type { FontRegistry } from '../src/model/fonts.ts';
 import { Editor } from '../src/model/edit.ts';
 import type { Change, StylePatch } from '../src/model/edit.ts';
 import type { Box, Doc, LaidBox, Page, Rect } from '../src/model/types.ts';
-import { Preview, movedPictures } from './preview.ts';
+import { Preview } from './preview.ts';
 import { TextInput } from './textinput.ts';
-import type { FitReport } from '../src/fit/fit.ts';
 import type { WorkerReq, WorkerRes } from './worker.ts';
 
 const Z = 1.5;                                                   // CSS pixels per point
@@ -144,18 +143,6 @@ function showPage(image: ImageData) {
 function renderFrames() {
   framesEl.replaceChildren();
   frameDivs.clear();
-  // pictures the fitter moved or shrank: a dashed outline at the new frame (the preview draws them there)
-  for (const { pic, to } of movedPictures(pg())) {
-    const d = document.createElement('div');
-    d.className = 'picture moved';
-    d.dataset.pic = pic.id;
-    const f = pic.frame, m = pic.move!;
-    d.title = `${pic.id} (${pic.kind}) moved by the fitter: ${m.dx.toFixed(1)}, ${m.dy.toFixed(1)} pt` +
-      (Math.abs(m.scale - 1) > 1e-6 ? `, scaled ${(m.scale * 100).toFixed(0)}%` : '') +
-      ` (from ${f.x0.toFixed(0)}, ${f.y0.toFixed(0)})`;
-    place(d, to);
-    framesEl.append(d);
-  }
   for (const b of pg().boxes) {
     const d = document.createElement('div');
     d.className = 'frame';
@@ -282,10 +269,8 @@ function placeEditbox() {
 function onChange(c: Change) {
   if (c.page !== n || !preview) return;
   const p = pg();
-  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge' || c.edit.kind === 'fit';
-  // a fit (done, undone or redone) changes every box and the pictures' moves: everything is drawn again
-  if (c.edit.kind === 'fit') preview.drawAll(p, laidOf);
-  else preview.redraw(p, c.boxes, laidOf);
+  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge';
+  preview.redraw(p, c.boxes, laidOf);
   stats.redraws++;
   if (structural) renderFrames();
   else for (const id of c.boxes) { const b = p.boxes.find((x) => x.id === id); if (b) updateFrame(b); }
@@ -341,21 +326,6 @@ ui.align.addEventListener('change', () => style({ align: ui.align.value as 'left
 ui.bold.addEventListener('click', () => style({ bold: ui.bold.getAttribute('aria-pressed') !== 'true' }));
 ui.italic.addEventListener('click', () => style({ italic: ui.italic.getAttribute('aria-pressed') !== 'true' }));
 ui.reset.addEventListener('click', () => { if (editor && selected) editor.resetCharSpacing(n, selected); });
-// Fit the page: the fitter changes frames, sizes and picture moves in place as one undoable step (the
-// source is kept, so editing a box again starts from its fitted state); the editor's 'fit' change redraws every box
-// and the moved pictures (onChange).
-$<HTMLButtonElement>('fit').addEventListener('click', () => {
-  if (!editor || !fonts || !preview) return;
-  const p = pg();
-  const r: FitReport = editor.fitPage(n);   // one undoable step
-  const fixed = r.boxes.filter((x) => x.result === 'fixed').length;
-  const unfit = r.boxes.filter((x) => x.result === 'unfit');
-  const moved = movedPictures(p).length;
-  log.textContent = `fit: ${r.boxes.length} edited boxes, ${fixed} fitted, ${unfit.length} unfit` +
-    (unfit.length ? ` (${unfit.map((u) => `${u.box} about ${u.charsOver} characters over`).join('; ')})` : '') +
-    (moved ? `, ${moved} picture${moved > 1 ? 's' : ''} moved (dashed)` : '') + `, ${r.ms} ms`;
-  (window as unknown as { __fit: FitReport }).__fit = r;
-});
 ui.pin.addEventListener('change', () => { if (editor && selected) editor.setHeightPinned(n, selected, ui.pin.checked); });
 ui.split.addEventListener('click', () => {
   if (!editor || !selected) return;

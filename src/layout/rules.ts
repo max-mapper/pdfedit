@@ -1,18 +1,18 @@
-// Shapes → the page's rule segments (table rulings, separators), panel candidates and pictures.
+// Shapes → the page's rule pieces (table rulings, separators), panel candidates and pictures.
 import type { PageInput, Rect, Shape } from './types.ts';
 import { area, height, width } from './geom.ts';
 
-/** An axis-aligned segment: horizontal when y0 = y1, vertical when x0 = x1. */
+/** An axis-aligned piece of a rule: horizontal when y0 = y1, vertical when x0 = x1. */
 export type Seg = { x0: number; y0: number; x1: number; y1: number; shape: number };
 
-export function ruleSegments(shapes: Shape[]): Seg[] {
+export function rulePieces(shapes: Shape[]): Seg[] {
   const out: Seg[] = [];
   for (const sh of shapes) {
     if (sh.kind !== 'path') continue;
     const b = sh.bounds, w = width(b), h = height(b);
     if (!(w > 0 || h > 0)) continue;
     // a thin path: PDFium's own isRule, or a stroked straight line whose bounds include a thick stroke
-    const thin = sh.isRule || (sh.stroke !== null && sh.segments <= 3 && Math.min(w, h) <= sh.strokeWidth + 1.5 && Math.max(w, h) > 6);
+    const thin = sh.isRule || (sh.stroke !== null && sh.pathSegs <= 3 && Math.min(w, h) <= sh.strokeWidth + 1.5 && Math.max(w, h) > 6);
     if (thin) {
       if (w >= h) { const y = (b.y0 + b.y1) / 2; out.push({ x0: b.x0, y0: y, x1: b.x1, y1: y, shape: sh.index }); }
       else { const x = (b.x0 + b.x1) / 2; out.push({ x0: x, y0: b.y0, x1: x, y1: b.y1, shape: sh.index }); }
@@ -42,10 +42,10 @@ export function panelCandidates(page: PageInput): number[] {
   return out;
 }
 
-/** Images, shadings and drawn figures (paths with many segments that are not rules): what labels sit beside. */
+/** Images, shadings and drawn figures (paths of many drawing steps that are not rules): what labels sit beside. */
 export function pictures(shapes: Shape[]): Rect[] {
   return shapes.filter((sh) => sh.kind === 'image' || sh.kind === 'shading' ||
-    (sh.kind === 'path' && !sh.isRule && !sh.isRect && sh.segments > 8 && area(sh.bounds) > 400)).map((sh) => sh.bounds);
+    (sh.kind === 'path' && !sh.isRule && !sh.isRect && sh.pathSegs > 8 && area(sh.bounds) > 400)).map((sh) => sh.bounds);
 }
 
 /** Rules parallel to a frame's lines, in its local coordinates: what a paragraph or box never spans. */

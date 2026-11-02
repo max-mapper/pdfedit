@@ -1,10 +1,10 @@
 // Detection (src/layout) + engine characters (src/engine) → the editor's document model (src/model/types.ts).
-// Pure TypeScript with no font or DOM dependency, so it runs in the PDFium worker, in Node and in the fitter.
-import type { Char, PdfDoc, PdfPage, Rect } from '../engine/pdfium.ts';
-import type { PageInput, Result, Shape } from '../layout/types.ts';
+// Pure TypeScript with no font or DOM dependency, so it runs in the PDFium worker and in Node.
+import type { Char, PdfDoc, PdfPage } from '../engine/pdfium.ts';
+import type { PageInput, Result } from '../layout/types.ts';
 import { detectBoxes } from '../layout/detect.ts';
 import { isBoldChar } from '../layout/fontstyle.ts';
-import type { Box, Doc, FontRef, Page, Paragraph, Picture, RGB, Run, SourceLines, SourceState } from './types.ts';
+import type { Box, Doc, FontRef, Page, Paragraph, RGB, Run, SourceLines, SourceState } from './types.ts';
 export { dominantRun, styleKeyOf } from './style.ts';
 import { dominantRun } from './style.ts';
 
@@ -19,9 +19,6 @@ const FLAG_ITALIC = 1 << 6;
 
 /** Ascent − descent of a typical face, em: where a line box puts its baseline (src/text/layout.ts, CSS model). */
 const LINE_AD = 0.8;
-
-/** Frames closer than this (points) touch. */
-const TOUCH_TOL = 0.5;
 
 export type BuildOptions = {
   /** The page's characters, text objects and shapes when the caller has read them already (detection needs the
@@ -65,12 +62,10 @@ export function buildPageFrom(n: number, input: PageInput, det: Result): Page {
     const horizontal = !b.vertical && b.angle === 0;
     const geo: { lines: number; first: number; last: number; size: number }[] = [];
     const srcIn: { lines: number[][]; marker: number[]; baselines: number[] }[] = [];   // for sourceLinesOf
-    let lineCount = 0;
     for (const pi of b.paragraphs) {
       const P = det.paragraphs[pi];
       let lineChars: number[] = [];
       for (const li of P.lines) for (const ci of det.lines[li].chars) lineChars.push(ci);
-      lineCount += P.lines.length;
       const size = P.size > 0 ? P.size : 10;
       const leading = P.leading > 0 ? round(P.leading / size, 3) : 0;   // one-line paragraphs: filled in below
       const firstBaseline = det.lines[P.lines[0]]?.baseline ?? 0;
@@ -138,9 +133,7 @@ export function buildPageFrom(n: number, input: PageInput, det: Result): Page {
     const firstLine = det.lines[det.paragraphs[b.paragraphs[0]]?.lines[0]];
     const allRuns = paragraphs.flatMap((p) => p.runs);
     const source: SourceState = {
-      frame: { ...b.frame }, lines: lineCount, paragraphs: srcParas, objs: [...b.objs], chars: [...b.chars],
-      panel: b.panel !== null && det.panels[b.panel] ? { ...det.panels[b.panel].frame } : null,
-      neighbours: [],
+      frame: { ...b.frame }, paragraphs: srcParas, objs: [...b.objs], chars: [...b.chars],
       baseline: firstLine && !b.vertical && b.angle === 0 ? round(b.frame.y1 - firstLine.baseline, 3) : undefined,
       charSpacing: medianOf(allRuns.filter((r) => r.text.trim()).map((r) => r.charSpacing)),
       angle: b.angle,
@@ -155,30 +148,7 @@ export function buildPageFrom(n: number, input: PageInput, det: Result): Page {
       heightPinned: false, writingMode: b.vertical ? 'vertical-rl' : 'horizontal-tb',
     };
   });
-  // neighbours: boxes whose source frames touch or overlap
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      if (gap(boxes[i].frame, boxes[j].frame) <= TOUCH_TOL) {
-        boxes[i].source.neighbours.push(boxes[j].id);
-        boxes[j].source.neighbours.push(boxes[i].id);
-      }
-    }
-  }
-  return {
-    n, w: input.w, h: input.h, boxes,
-    panels: det.panels.map((p) => ({ ...p.frame })),
-    obstacles: obstaclesOf(input.shapes),
-    pictures: picturesOf(input.shapes, boxes, input.w, input.h),
-    rules: input.shapes.filter((s) => s.kind === 'path' && (s.isRule || s.isStrokeLine)).map((s) => ({ ...s.bounds })),
-    fills: fillsOf(input.shapes, input.w, input.h),
-  };
-}
-
-/** Filled rectangles smaller than most of the page (cells, chart bars, cards, panels): page backgrounds excluded. */
-export function fillsOf(shapes: Shape[], w: number, h: number): Rect[] {
-  return shapes.filter((s) => s.kind === 'path' && (s.isRect || s.rects) && !s.isRule && s.fill !== null && s.fill[3] > 0)
-    .flatMap((s) => s.rects ?? [s.bounds]).filter((r) => area(r) < 0.6 * w * h && Math.min(r.x1 - r.x0, r.y1 - r.y0) >= 1.5)
-    .map((r) => ({ ...r }));
+  return { n, w: input.w, h: input.h, boxes };
 }
 
 /**
@@ -336,31 +306,6 @@ const V_ORIGIN = 0.88;
 
 function isCjkCodePoint(cp: number): boolean {
   return (cp >= 0x3000 && cp <= 0x30ff) || (cp >= 0x3400 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xff00 && cp <= 0xffef) || (cp >= 0xac00 && cp <= 0xd7af);
-}
-
-/** Pictures text must not grow over: images, shadings and drawn figures (paths of many segments). */
-export function obstaclesOf(shapes: Shape[]): Rect[] {
-  return shapes.filter((s) => s.kind === 'image' || s.kind === 'shading' ||
-    (s.kind === 'path' && !s.isRule && !s.isRect && s.segments > 8 && area(s.bounds) > 100)).map((s) => ({ ...s.bounds }));   // icons from 10 × 10 pt
-}
-
-/** The obstacles the fitter may move or shrink: images, and figures drawn as one path object. A picture stays fixed
- *  when text lies on it, when another object overlaps it (an outline, an overlay, a figure of several paths) unless
- *  that object holds it with room on every side (a panel), or when it covers most of the page (a background). */
-export function picturesOf(shapes: Shape[], boxes: Box[], w: number, h: number): Picture[] {
-  const isFigure = (s: Shape) => s.kind === 'path' && !s.isRule && !s.isRect && s.segments > 8 && area(s.bounds) > 400;
-  const over = (a: Rect, b: Rect) => Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > TOUCH_TOL && Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) > TOUCH_TOL;
-  const holds = (a: Rect, b: Rect) => a.x0 <= b.x0 - 3 && a.y0 <= b.y0 - 3 && a.x1 >= b.x1 + 3 && a.y1 >= b.y1 + 3;
-  const out: Picture[] = [];
-  for (const s of shapes) {
-    if (s.kind !== 'image' && !isFigure(s)) continue;
-    const f = s.bounds;
-    if (area(f) <= 0 || area(f) > 0.6 * w * h) continue;
-    if (boxes.some((b) => over(b.source.frame, f))) continue;
-    if (shapes.some((o) => o !== s && over(o.bounds, f) && !holds(o.bounds, f))) continue;
-    out.push({ id: `pic${s.index}`, kind: s.kind === 'image' ? 'image' : 'figure', frame: { ...f }, z: s.z, objs: [s.index] });
-  }
-  return out;
 }
 
 /** The marker's characters on a bullet paragraph's first line, the text without it, the distance from the marker's
@@ -526,11 +471,4 @@ function rotOf(angle: number): 0 | 90 | 180 | 270 {
   return a as 0 | 90 | 180 | 270;
 }
 
-function gap(a: Rect, b: Rect): number {
-  const dx = Math.max(0, Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1));
-  const dy = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
-  return Math.hypot(dx, dy);
-}
-
-const area = (r: Rect) => Math.max(0, r.x1 - r.x0) * Math.max(0, r.y1 - r.y0);
 const round = (x: number, d: number) => { const f = 10 ** d; return Math.round(x * f) / f; };

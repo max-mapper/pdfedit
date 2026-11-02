@@ -122,12 +122,12 @@ const MAC_HIGH =
   'breve dotaccent ring cedilla hungarumlaut ogonek caron';
 
 // pdf-lib's StandardFonts and @pdf-lib/standard-fonts' FontNames are the same strings under two enum types.
-const embedderFor = (font: StandardFonts) =>
+const standardFontOf = (font: StandardFonts) =>
   StandardFontEmbedder.for(font as unknown as Parameters<typeof StandardFontEmbedder.for>[0]);
 
 /** code → glyph name from one of pdf-lib's bundled encodings (WinAnsi, Symbol, ZapfDingbats). */
 function fromPdfLibEncoding(font: StandardFonts): Record<number, string> {
-  const emb = embedderFor(font);
+  const emb = standardFontOf(font);
   const maps = (emb.encoding as unknown as { unicodeMappings: Record<string, [number, string]> }).unicodeMappings;
   const t: Record<number, string> = {};
   for (const [code, name] of Object.values(maps)) if (!(code in t)) t[code] = name;
@@ -201,7 +201,7 @@ export function glyphUnicode(name: string): string | null {
   if (!glyphTable) {
     glyphTable = new Map(Object.entries(EXTRA_GLYPHS));
     for (const f of [StandardFonts.Helvetica, StandardFonts.Symbol, StandardFonts.ZapfDingbats]) {
-      const maps = (embedderFor(f).encoding as unknown as { unicodeMappings: Record<string, [number, string]> }).unicodeMappings;
+      const maps = (standardFontOf(f).encoding as unknown as { unicodeMappings: Record<string, [number, string]> }).unicodeMappings;
       for (const [cp, [, n]] of Object.entries(maps)) if (!glyphTable.has(n)) glyphTable.set(n, String.fromCodePoint(Number(cp)));
     }
   }
@@ -365,7 +365,7 @@ export function fontInfoFromDict(context: PDFContext, font: PDFDict): FontInfo {
   }
   const std = type === 'Type3' ? null : standard14(baseFont);
   if (std) {
-    const afm = embedderFor(std).font;
+    const afm = standardFontOf(std).font;
     const enc = simpleEncoding(context, font, std);
     const cache = new Map<number, number>();
     return {

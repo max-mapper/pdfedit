@@ -1,4 +1,4 @@
-// exportDoc on synthetic PDFs (pdf-lib, Helvetica and a fontkit-embedded Noto Sans Type0). Synthetic material only.
+// exportDoc on synthetic PDFs (pdf-lib, Helvetica and a Noto Sans Type0 font added with fontkit). Synthetic material only.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

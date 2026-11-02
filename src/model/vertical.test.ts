@@ -31,7 +31,7 @@ const vbox = (id: string, frame: Box['frame'], text: string, size = 12): Box => 
   return b;
 };
 const colText = (l: LaidBox['lines'][number]) => l.runs.map((r) => r.glyphs.map((g) => g.text).join('')).join('');
-const docOf = (...boxes: Box[]): Doc => ({ pages: [{ n: 0, w: 595, h: 842, boxes, panels: [], obstacles: [] }] });
+const docOf = (...boxes: Box[]): Doc => ({ pages: [{ n: 0, w: 595, h: 842, boxes }] });
 
 test('layoutBox lays a vertical box out in columns, right to left; the height stays, the width follows the text', () => {
   const frame = { x0: 360, x1: 400, y0: 500, y1: 620 };
@@ -77,7 +77,7 @@ test('layoutBox lays a vertical box out in columns, right to left; the height st
   assert.ok(Math.abs(layoutBox(b, fonts).lines[0].axis! - 388) < 1e-6);
 });
 
-test('the fitter\'s moves: a taller frame makes longer, fewer columns; a pinned frame overflows when the stack is wider', () => {
+test('frame changes: a taller frame makes longer, fewer columns; a pinned frame overflows when the stack is wider', () => {
   const short = layoutBox(vbox('v', { x0: 360, x1: 400, y0: 560, y1: 620 }, BODY), fonts);
   const tall = layoutBox(vbox('v', { x0: 360, x1: 400, y0: 380, y1: 620 }, BODY), fonts);
   assert.ok(tall.lines.length < short.lines.length);

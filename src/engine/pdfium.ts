@@ -27,8 +27,7 @@ export type Shape = {
   fill: [number, number, number, number] | null; stroke: [number, number, number, number] | null; strokeWidth: number;
   isRect: boolean;          // an axis-aligned rectangle (one closed 4-corner subpath)
   isRule: boolean;          // a straight horizontal or vertical line, or a rectangle thinner than 1.5 pt
-  isStrokeLine?: boolean;   // a single straight stroke a little thicker than that (src/model/build.ts: a rule for the fitter)
-  segments: number;
+  pathSegs: number;         // a path's drawing steps (moves, lines, curves); 0 for images and shadings
   z: number;                // paint order, comparable with TextObj.z: a panel is painted before (behind) its text
   /** A path made only of axis-aligned rectangles (several cells or bars drawn as one object): each one, page space. */
   rects?: Rect[];
@@ -311,16 +310,16 @@ function makePdfium(M: Module): Pdfium {
             const pts = [apply(parent, b.x0, b.y0), apply(parent, b.x1, b.y0), apply(parent, b.x0, b.y1), apply(parent, b.x1, b.y1)];
             b = { x0: Math.min(...pts.map((p) => p[0])), y0: Math.min(...pts.map((p) => p[1])), x1: Math.max(...pts.map((p) => p[0])), y1: Math.max(...pts.map((p) => p[1])) };
           }
-          let filled = true, stroked = false, segments = 0, isRect = false, rects: Rect[] | undefined;
+          let filled = true, stroked = false, pathSegs = 0, isRect = false, rects: Rect[] | undefined;
           if (type === FPDF_PAGEOBJ_PATH) {
             M.FPDFPath_GetDrawMode(h, scratch, scratch + 4);
             filled = (raw.getValue(scratch, 'i32') as number) !== 0;
             stroked = (raw.getValue(scratch + 4, 'i32') as number) !== 0;
-            segments = M.FPDFPath_CountSegments(h);
-            if (segments >= 4 && segments <= 6) {
+            pathSegs = M.FPDFPath_CountSegments(h);
+            if (pathSegs >= 4 && pathSegs <= 6) {
               const pts: [number, number][] = [];
               let straight = true;
-              for (let k = 0; k < segments; k++) {
+              for (let k = 0; k < pathSegs; k++) {
                 const sg = M.FPDFPath_GetPathSegment(h, k);
                 if (k > 0 && M.FPDFPathSegment_GetType(sg) !== FPDF_SEGMENT_LINETO) straight = false;
                 M.FPDFPathSegment_GetPoint(sg, scratch, scratch + 4);
@@ -330,22 +329,17 @@ function makePdfium(M: Module): Pdfium {
               const m = matrixOf(h);
               isRect = straight && xs.size === 2 && ys.size === 2 && Math.abs(m[1]) < 1e-6 && Math.abs(m[2]) < 1e-6;
             }
-            if (segments >= 8 && segments <= 400) rects = rectsOf(h, segments, parent);
+            if (pathSegs >= 8 && pathSegs <= 400) rects = rectsOf(h, pathSegs, parent);
           }
           M.FPDFPageObj_GetStrokeWidth(h, scratch + 48);
           const w = b.x1 - b.x0, ht = b.y1 - b.y0;
           const isRule = type === FPDF_PAGEOBJ_PATH && (Math.min(w, ht) < 1.5) && Math.max(w, ht) > 6;
-          // a single straight stroke (a move and one line) whose bounds, which include the stroke, are under twice its
-          // width plus a little: a 1 pt stroked line measures 2 pt across. The fitter keeps text from growing across it;
-          // detection keeps the stricter isRule (counting these broke table detection on a timeline page).
-          const isStrokeLine = type === FPDF_PAGEOBJ_PATH && stroked && segments === 2 && Math.max(w, ht) > 6 &&
-            Math.min(w, ht) < Math.min(6, 2 * f32(scratch + 48) + 0.5);
           out.push({
             index: out.length, kind: type === FPDF_PAGEOBJ_PATH ? 'path' : type === FPDF_PAGEOBJ_IMAGE ? 'image' : 'shading',
             bounds: b, inForm: parent !== null,
             fill: type === FPDF_PAGEOBJ_PATH && !filled ? null : rgba('FPDFPageObj_GetFillColor', h),
             stroke: type === FPDF_PAGEOBJ_PATH && stroked ? rgba('FPDFPageObj_GetStrokeColor', h) : null,
-            strokeWidth: f32(scratch + 48), isRect, isRule, isStrokeLine, segments, z, ...(rects ? { rects } : {}),
+            strokeWidth: f32(scratch + 48), isRect, isRule, pathSegs, z, ...(rects ? { rects } : {}),
           });
         };
         const n = M.FPDFPage_CountObjects(pg);

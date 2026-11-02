@@ -24,7 +24,7 @@ export type Os2Info = {
   avgCharWidth?: number;
   familyClass?: number;      // sFamilyClass high byte (1–7 serif, 8 sans, 10 script, 12 symbolic)
   fsSelection?: number;
-  fsType?: number;           // embedding permissions of the document's own font
+  fsType?: number;           // OS/2 fsType: the licence flags of the document's own font
   panose?: number[];         // 10 bytes
   xHeight?: number;          // sxHeight (OS/2 v2+)
   capHeight?: number;

@@ -225,7 +225,7 @@ test('PANOSE from a descriptor /Style string', () => {
   assert.equal(describeSource({ name: 'Unrecognised', panose: [2, 2, 6, 3, 5, 4, 5, 2, 3, 4] }).classification, 'serif');
 });
 
-test('the catalog: every alias names catalog families; files are unique TrueType; licences allow embedding', () => {
+test('the catalog: every alias names catalog families; files are unique TrueType; licences allow subsets in PDFs', () => {
   for (const a of ALIASES) for (const id of [...a.latn, ...(a.jpan ?? [])]) assert.ok(FAMILIES.has(id), `${a.label}: ${id}`);
   const files = catalogFiles();
   assert.equal(new Set(files).size, files.length);

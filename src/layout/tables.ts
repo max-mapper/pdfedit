@@ -1,4 +1,4 @@
-// Rule segments → table grids. Collinear pieces are joined, segments that cross or touch form connected groups,
+// Rule pieces → table grids. Collinear pieces are joined, pieces that cross or touch form connected groups,
 // and a group with at least three distinct vertical and three distinct horizontal positions (2 × 2 cells) is a
 // grid. A cell boundary with no rule along it merges the two cells (spanning cells).
 import type { Rect } from './types.ts';

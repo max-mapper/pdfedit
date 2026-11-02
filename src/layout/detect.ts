@@ -1,11 +1,11 @@
 // Box detection: a page's characters → lines → paragraphs → boxes, with panels, tables and
-// a reading order. Stages: rules.ts (rule segments, panel candidates, pictures), tables.ts (grids), lines.ts
+// a reading order. Stages: rules.ts (rule pieces, panel candidates, pictures), tables.ts (grids), lines.ts
 // (characters → lines and words), paragraphs.ts, boxes.ts, order.ts (XY-cut). Every threshold is in
 // DEFAULT_THRESHOLDS and can be overridden through opts.thresholds.
 import type { Box, DetectOptions, Line, PageInput, Panel, Paragraph, Rect, Result, Table, Thresholds } from './types.ts';
 import type { Frame } from './geom.ts';
 import { area, inside, rectDistance, spanOf, union } from './geom.ts';
-import { panelCandidates, pictures, ruleSegments } from './rules.ts';
+import { panelCandidates, pictures, rulePieces } from './rules.ts';
 import { findTables } from './tables.ts';
 import { buildLines } from './lines.ts';
 import type { LineRec } from './lines.ts';
@@ -27,7 +27,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
 export function detectBoxes(page: PageInput, opts: DetectOptions = {}): Result {
   const t0 = performance.now();
   const th: Thresholds = { ...DEFAULT_THRESHOLDS, ...opts.thresholds };
-  const segs = ruleSegments(page.shapes);
+  const segs = rulePieces(page.shapes);
   const grids = findTables(segs);
   const cands = panelCandidates(page);
   const pics = pictures(page.shapes);
