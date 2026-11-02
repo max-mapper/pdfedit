@@ -24,3 +24,7 @@ node bin/pdfedit.ts replace in.pdf out.pdf --table pairs.json
 The translator command reads `{"pages": {"<n>": ["paragraph", …]}}` on stdin. It writes the same shape back with the translations.
 
 Node 24 runs the TypeScript directly. Module contracts are in `docs/CONTRACTS.md`.
+
+## Licence
+
+CC BY-SA 4.0 (see `LICENSE`). Commercial use is allowed with credit to pdfedit by max-mapper; changed versions are shared under the same licence.

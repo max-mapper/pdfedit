@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Client-side PDF text editor on PDFium (WebAssembly): render, detect paragraph boxes, edit and fit text, export real text objects.",
-  "license": "BSD-3-Clause",
+  "license": "CC-BY-SA-4.0",
   "engines": {
     "node": ">=24"
   },
