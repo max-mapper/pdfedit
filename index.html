@@ -5,28 +5,42 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pdfedit</title>
 <link rel="icon" href="data:,">
-  <script type="module" crossorigin src="./assets/index-DKSWru7K.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BITLf72S.css">
+  <script type="module" crossorigin src="./assets/index-bsZZu_zB.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-kFoWOgX8.css">
 </head>
 <body>
 <header id="bar">
-  <div class="grp">
+  <div class="grp" data-cap="File" role="group" aria-label="File">
     <button id="open" class="primary" title="Open a PDF (or drop one on the window)">Open PDF…</button>
     <input type="file" id="file" accept="application/pdf,.pdf" hidden>
     <span id="docname" class="docname"></span>
   </div>
-  <div class="grp" role="group" aria-label="Zoom">
+  <div class="grp more-item" data-cap="Edit" role="group" aria-label="Edit">
+    <button id="undo" disabled title="Undo (Ctrl+Z)">Undo</button>
+    <button id="redo" disabled title="Redo (Ctrl+Shift+Z or Ctrl+Y)">Redo</button>
+  </div>
+  <div class="grp more-item" data-cap="View" role="group" aria-label="View">
     <button id="zoom-out" class="icon" title="Zoom out (Ctrl −)" aria-label="Zoom out">−</button>
-    <select id="zoom-sel" title="Zoom (Ctrl + wheel)" aria-label="Zoom level"></select>
+    <select id="zoom-sel" title="Zoom (Ctrl + wheel; Ctrl 0: 100%)" aria-label="Zoom level"></select>
     <button id="zoom-in" class="icon" title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
     <button id="fit-width" title="Zoom to the width of the widest page">Fit width</button>
     <button id="fit-page" title="Zoom so the current page fits the window">Fit page</button>
   </div>
-  <div class="grp" role="group" aria-label="History">
-    <button id="undo" disabled title="Undo (Ctrl+Z)">Undo</button>
-    <button id="redo" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+  <div class="grp more-item" id="g-text" data-cap="Text" role="group" aria-label="Text">
+    <button id="edit-text" disabled title="Edit the selected box's text (Enter, or double-click a box); Escape stops">Edit text</button>
+    <button id="tb-split" disabled title="Split the box at the caret (or before the focused paragraph)">Split</button>
+    <button id="tb-merge" disabled title="Merge the shift-clicked box into the selected one">Merge</button>
+    <button id="tb-font" disabled title="Font, size, colour, alignment and spacing of the selected box (the Text panel)">Font…</button>
+  </div>
+  <div class="grp more-item" id="g-objects" data-cap="Objects" role="group" aria-label="Objects" hidden>
+    <span class="slot" data-slot="select"></span><span class="slot" data-slot="insert"></span><span class="slot" data-slot="arrange"></span>
   </div>
   <div class="spacer"></div>
+  <div class="grp" id="g-aux">
+    <button id="more" class="narrow-only" aria-expanded="false" title="More tools: edit, view, text and objects">Tools ▾</button>
+    <button id="panel-toggle" class="narrow-only" aria-expanded="false" title="Show the Text, Objects and Export panels">Panel</button>
+    <button id="help-btn" class="icon" title="What you can do, and the keys (?)" aria-label="Help">?</button>
+  </div>
   <div class="grp">
     <a id="download" class="button" hidden>Download</a>
     <button id="export" class="primary" disabled title="Write the edits into the PDF (incremental save) and verify the result">Export PDF</button>
@@ -39,9 +53,11 @@
     <div id="pages"></div>
     <div id="empty">
       <div class="drop">
-        <div class="drop-title">Open a PDF to edit its text</div>
-        <p>Drop a file anywhere on this window, or <button id="open2" class="link">choose one</button>.</p>
-        <p class="muted">Everything runs in this browser tab: the file is not uploaded anywhere.</p>
+        <div class="drop-title">Edit the text and pictures of a PDF</div>
+        <p>Drop a PDF anywhere on this window, or</p>
+        <p class="actions"><button id="open2" class="primary">Open a PDF…</button><button id="sample" title="Open a made-up two-page PDF with text, a picture, a logo, a chart and a turned page">Try the sample</button></p>
+        <p class="can">Edit text in place · fonts and styles · split and merge boxes · move, resize, turn and delete pictures and shapes · add images · group and reorder · export a checked PDF</p>
+        <p class="muted small">Everything runs in this browser tab: the file is not uploaded anywhere. Press <kbd>?</kbd> for help.</p>
       </div>
     </div>
   </main>
@@ -112,6 +128,49 @@
   <div class="h n" data-h="n"></div><div class="h s" data-h="s"></div><div class="h e" data-h="e"></div><div class="h w" data-h="w"></div>
   <div class="h ne" data-h="ne"></div><div class="h nw" data-h="nw"></div><div class="h se" data-h="se"></div><div class="h sw" data-h="sw"></div>
 </div>
+
+<dialog id="help" aria-labelledby="help-title">
+  <div class="help-head"><h2 id="help-title">What you can do</h2><button id="help-close" class="icon" aria-label="Close" title="Close (Escape)">×</button></div>
+  <div class="help-body">
+    <section>
+      <h3>Open and export</h3>
+      <ul>
+        <li><b>Open PDF…</b> or drop a PDF on the window; <b>Try the sample</b> opens a made-up one.</li>
+        <li><b>Export PDF</b> writes the edits into the file as real text, checks it again, and offers the download.</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd> redoes, on any page.</li>
+        <li><kbd>Ctrl</kbd>+<kbd>+</kbd> and <kbd>Ctrl</kbd>+<kbd>−</kbd> zoom, <kbd>Ctrl</kbd>+<kbd>0</kbd> is 100%, <kbd>Ctrl</kbd> + wheel zooms at the pointer.</li>
+      </ul>
+    </section>
+    <section>
+      <h3>Text</h3>
+      <ul>
+        <li>Click a box to select it; double-click it, or press <kbd>Enter</kbd>, to edit its text. <kbd>Escape</kbd> stops editing.</li>
+        <li>The text reflows inside its own box. Drag the box or its handles to move and resize it; arrows nudge it by 1 pt (<kbd>Shift</kbd>: 10 pt).</li>
+        <li>The <b>Text</b> panel sets the font, size, bold, colour, alignment, leading and spacing, for the box or one paragraph.</li>
+        <li><b>Split</b> cuts the box at the caret. Shift-click a second box, then <b>Merge</b> joins it into the first.</li>
+        <li><kbd>Delete</kbd> on a selected box (not editing) clears its text.</li>
+      </ul>
+    </section>
+    <section data-needs="select">
+      <h3>Pictures and shapes</h3>
+      <ul>
+        <li>With <b>Select</b> on, click an object to select the topmost one there. <kbd>Alt</kbd>-click, or click again, picks the one below (<kbd>Alt</kbd>+<kbd>Shift</kbd>: above).</li>
+        <li><kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> step through the page's objects in paint order. <kbd>Enter</kbd> steps into a group, <kbd>Escape</kbd> steps out.</li>
+        <li>Drag to move. Square handles resize (<kbd>Shift</kbd> keeps the proportions, <kbd>Alt</kbd> resizes about the centre); the round handle turns it (<kbd>Shift</kbd>: steps of 15°).</li>
+        <li>Arrows nudge by 1 pt (<kbd>Shift</kbd>: 10 pt). <kbd>R</kbd> turns right, <kbd>Shift</kbd>+<kbd>R</kbd> left. <kbd>Delete</kbd> removes it.</li>
+        <li>Shift-click adds objects to the selection; <b>Group</b> (<kbd>Ctrl</kbd>+<kbd>G</kbd>) makes them one, <b>Ungroup</b> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>) splits one. Logos and charts come grouped (dashed outline).</li>
+        <li><b>Forward</b> (<kbd>Ctrl</kbd>+<kbd>]</kbd>) and <b>Backward</b> (<kbd>Ctrl</kbd>+<kbd>[</kbd>) change the paint order by one.</li>
+        <li>When a shared crop cuts the object, the bar offers to move it with or without the crop.</li>
+        <li>The <b>Objects</b> panel lists what is under the pointer; a click there selects it.</li>
+      </ul>
+    </section>
+    <section data-needs="place">
+      <h3>Images</h3>
+      <ul><li><b>Add image</b> puts a PNG or JPEG on the page in view; or drop one on a page where it should go.</li></ul>
+    </section>
+    <p class="muted small">Everything runs in this browser tab: files are not uploaded anywhere. Press <kbd>?</kbd> to open this again.</p>
+  </div>
+</dialog>
 
 </body>
 </html>
