@@ -56,6 +56,13 @@ export function decodeStream(context: PDFContext, stream: PDFStream, label: stri
 
 const refKey = (r: PDFRef) => `${r.objectNumber} ${r.generationNumber}`;
 
+/** Resource categories appendContent can add to (ISO 32000-1 §7.8.3, Table 33). */
+const RESOURCE_CATEGORIES = ['Font', 'XObject', 'ExtGState'] as const;
+/** Resources for new content, by category: resource name → object. */
+export type PageResources = Partial<Record<(typeof RESOURCE_CATEGORIES)[number], Record<string, PDFRef>>>;
+/** A per-category map has plain objects for values; the original form maps font names to references. */
+const isCategoryMap = (r: Record<string, PDFRef> | PageResources): r is PageResources => Object.values(r).some((v) => !(v instanceof PDFRef));
+
 export class PdfEdit {
   readonly doc: PDFDocument;
   readonly context: PDFContext;
@@ -66,6 +73,7 @@ export class PdfEdit {
   readonly #pageRefs: PDFRef[];
   readonly #touched = new Map<string, PDFRef>();
   readonly #wrapped = new Set<number>();
+  readonly #bracketed = new Set<number>();
   #pushRef: PDFRef | null = null;
   #popRef: PDFRef | null = null;
 
@@ -129,17 +137,40 @@ export class PdfEdit {
     const s = this.context.register(this.context.flateStream(contents));
     dict.set(PDFName.of('Contents'), s);
     this.#wrapped.delete(page);
+    this.#bracketed.delete(page);
     this.#touched.set(refKey(ref), ref);
   }
 
   /**
    * Appends a new content stream (the caller wraps it in q…Q). The first time on a page, the existing contents are
-   * bracketed by q … Q streams so an unbalanced cm or q in the original cannot leak into the new content. The fonts
-   * are added under the given names to the page's own copy of its (possibly inherited) resources.
+   * bracketed by q … Q streams so an unbalanced cm or q in the original cannot leak into the new content. The
+   * resources the new content names are added to the page's own copy of its (possibly inherited) resources: a map of
+   * font names (the original form), or a map per category (`Font`, `XObject`, `ExtGState`). A name already used for
+   * another object is an error. Returns how many operators now come before the page's own content: 1 when it is
+   * bracketed, 0 when the page had no content.
    */
-  appendContent(page: number, content: Uint8Array, fonts: Record<string, PDFRef>): void {
+  appendContent(page: number, content: Uint8Array, resources: Record<string, PDFRef> | PageResources): number {
     const { ref, dict } = this.#page(page);
     const ctx = this.context;
+    // Resources first (a clash refuses the whole call): a shallow copy of the resolved dict and of each category
+    // changed, never mutating one other pages may share.
+    const byCategory: PageResources = isCategoryMap(resources) ? resources : { Font: resources };
+    const res = inheritedResources(ctx, dict);
+    const newRes = res ? res.clone(ctx) : ctx.obj({});
+    for (const category of RESOURCE_CATEGORIES) {
+      const entries = byCategory[category];
+      if (!entries) continue;
+      const catObj = resolve(ctx, newRes.get(PDFName.of(category)));
+      const newCat = catObj instanceof PDFDict ? catObj.clone(ctx) : ctx.obj({});
+      for (const [name, r] of Object.entries(entries)) {
+        const prior = lookupByName(newCat, name);
+        if (prior !== undefined && !(prior instanceof PDFRef && refKey(prior) === refKey(r))) {
+          throw new Error(`pdfedit: ${category === 'Font' ? 'font' : category} resource name /${name} is already used on page ${page}`);
+        }
+        newCat.set(PDFName.of(name), r);
+      }
+      newRes.set(PDFName.of(category), newCat);
+    }
     const existing = this.#streams(dict);
     const raw = dict.get(PDFName.of('Contents'));
     const v = resolve(ctx, raw);
@@ -151,6 +182,7 @@ export class PdfEdit {
       arr.push(this.#pushRef);
       for (const r of refs) arr.push(r);
       arr.push(this.#popRef);
+      this.#bracketed.add(page);
     } else {
       for (const r of refs) arr.push(r);
     }
@@ -158,21 +190,9 @@ export class PdfEdit {
     dict.set(PDFName.of('Contents'), arr);
     this.#wrapped.add(page);
 
-    // Resources: a shallow copy of the resolved dict and of its /Font, never mutating one other pages may share.
-    const res = inheritedResources(ctx, dict);
-    const newRes = res ? res.clone(ctx) : ctx.obj({});
-    const fontObj = resolve(ctx, newRes.get(PDFName.of('Font')));
-    const newFont = fontObj instanceof PDFDict ? fontObj.clone(ctx) : ctx.obj({});
-    for (const [name, fref] of Object.entries(fonts)) {
-      const prior = lookupByName(newFont, name);
-      if (prior !== undefined && !(prior instanceof PDFRef && refKey(prior) === refKey(fref))) {
-        throw new Error(`pdfedit: font resource name /${name} is already used on page ${page}`);
-      }
-      newFont.set(PDFName.of(name), fref);
-    }
-    newRes.set(PDFName.of('Font'), newFont);
     dict.set(PDFName.of('Resources'), newRes);
     this.#touched.set(refKey(ref), ref);
+    return this.#bracketed.has(page) ? 1 : 0;
   }
 
   /** A new FlateDecode stream with `bytes` and the old stream's dictionary (its filter entries dropped, `patch` set). */

@@ -283,7 +283,8 @@ try {
   // 5. the page commits again; the toolbar has only the general editor's controls
   await waitApp((a) => ['rendered', 'refused'].includes(a.pageState(0).kind), undefined, 60000);
   summary.afterKeyboard = await app((a) => a.pageState(0));
-  summary.toolbar = await page.$$eval('#bar button', (bs: A[]) => bs.map((b) => b.id));
+  // (controls of optional tools, in groups marked data-tool, are not the editor's own)
+  summary.toolbar = await page.$$eval('#bar button', (bs: A[]) => bs.filter((b) => !b.closest('[data-tool]')).map((b) => b.id));
   checks.toolbar = (summary.toolbar as string[]).join(',') === 'open,zoom-out,zoom-in,fit-width,fit-page,undo,redo,export';
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
 

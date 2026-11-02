@@ -8,6 +8,9 @@ import { detectBoxes } from '../src/layout/detect.ts';
 import { buildPageFrom, readPage } from '../src/model/build.ts';
 import type { Page } from '../src/model/types.ts';
 
+// optional modules for the worker (web/tools/*.worker.ts): loaded with it, so their page builders apply to every page
+import.meta.glob('./tools/*.worker.ts', { eager: true });
+
 export type WorkerReq =
   | { kind: 'open'; bytes: ArrayBuffer }
   /** Render page `n` at `scale` device pixels per point; `model: true` also detects and sends the model page. */

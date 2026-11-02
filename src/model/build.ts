@@ -2,6 +2,7 @@
 // Pure TypeScript with no font or DOM dependency, so it runs in the PDFium worker and in Node.
 import type { Char, PdfDoc, PdfPage } from '../engine/pdfium.ts';
 import type { PageInput, Result } from '../layout/types.ts';
+import { isPlain } from '../engine/view.ts';
 import { detectBoxes } from '../layout/detect.ts';
 import { isBoldChar } from '../layout/fontstyle.ts';
 import type { Box, Doc, FontRef, Page, Paragraph, RGB, Run, SourceLines, SourceState } from './types.ts';
@@ -34,7 +35,15 @@ export function buildPage(page: PdfPage, detection: Result, opts: BuildOptions =
 
 /** Reads what detection and the model need from an engine page. */
 export function readPage(page: PdfPage): PageInput {
-  return { w: page.size.w, h: page.size.h, chars: page.chars(), textObjects: page.textObjects(), shapes: page.shapes() };
+  return { w: page.size.w, h: page.size.h, chars: page.chars(), textObjects: page.textObjects(), shapes: page.shapes(), view: page.view };
+}
+
+/** More page data from the engine input and the detection, added to every page built (buildPageFrom): a module may
+ *  set fields of its own on the page and its boxes. Builders run in the order they were added, once each. */
+export type PageBuilder = (page: Page, input: PageInput, det: Result) => void;
+const builders: PageBuilder[] = [];
+export function addPageBuilder(b: PageBuilder): void {
+  if (!builders.includes(b)) builders.push(b);
 }
 
 /** Every page: read, detect, build. Pages are closed after reading. */
@@ -148,7 +157,9 @@ export function buildPageFrom(n: number, input: PageInput, det: Result): Page {
       heightPinned: false, writingMode: b.vertical ? 'vertical-rl' : 'horizontal-tb',
     };
   });
-  return { n, w: input.w, h: input.h, boxes };
+  const page: Page = { n, w: input.w, h: input.h, boxes, ...(input.view && !isPlain(input.view) ? { view: { ...input.view } } : {}) };
+  for (const b of builders) b(page, input, det);
+  return page;
 }
 
 /**

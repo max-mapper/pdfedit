@@ -8,11 +8,19 @@
 // replacing a paragraph, clearing) and editText (the editor's typing: the box's paragraph texts after a keystroke,
 // applied as a diff, so untouched characters keep their runs and inserted ones take the style next to them; a change
 // in the number of paragraphs, Enter or a deletion across a paragraph break, is one 'paras' edit).
+//
+// Hand marks (Box.hand): a move or resize (setFrame, setHeightPinned) and a style change (setStyle, resetCharSpacing)
+// mark the box as adjusted by hand; a page edit (pageEdit) may set marks itself. Text edits do not. Undo takes a mark
+// back with its edit.
+//
+// A page edit (pageEdit) is a change to the whole page made by a function, one undo step: every box and the page
+// fields it names are snapshotted before and after. Box hooks (addBoxHooks) let a module that keeps data of its own on
+// boxes follow splits and merges.
 import type { FontRegistry } from './fonts.ts';
 import { substituteRef } from './fonts.ts';
 import { LEAD_END, dominantRun, styleKeyOf } from './style.ts';
 import { LayoutCache } from './layout.ts';
-import type { Box, Doc, Edit, LaidBox, Page, Paragraph, Rect, Run } from './types.ts';
+import type { Box, Doc, Edit, LaidBox, Page, Paragraph, Rect, Run, SourceState } from './types.ts';
 
 /** What setStyle can change: run attributes (applied to every run of the paragraph, or of the box when para is
  *  null) and paragraph attributes. */
@@ -20,6 +28,18 @@ export type StylePatch = Partial<Pick<Run, 'size' | 'bold' | 'italic' | 'underli
   Partial<Pick<Paragraph, 'align' | 'leading' | 'indent' | 'spaceBefore' | 'spaceAfter'>>;
 
 export type EditOptions = { merge?: boolean };
+
+/** Called inside splitBox and mergeBoxes, before the edit is recorded: `split` with the box and its new second part;
+ *  `merge` with the box that stays, the box merged into it (already off the page) and both boxes' sources as they
+ *  were. Whatever the hook changes on these boxes is part of the edit's snapshot. */
+export type BoxHooks = {
+  split?(pg: Page, box: Box, part: Box): void;
+  merge?(pg: Page, into: Box, gone: Box, sources: { into: SourceState; gone: SourceState }): void;
+};
+const boxHooks: BoxHooks[] = [];
+export function addBoxHooks(h: BoxHooks): void {
+  if (!boxHooks.includes(h)) boxHooks.push(h);
+}
 export type Change = { page: number; boxes: string[]; edit: Edit; how: 'do' | 'undo' | 'redo' };
 
 const RUN_KEYS = ['size', 'bold', 'italic', 'underline', 'color', 'charSpacing', 'font'] as const;
@@ -168,13 +188,16 @@ export class Editor {
     applyStyle(box, para, patch);
     if (mergeable) {
       top.patch = { ...top.patch, ...clone(patch) };
+      box.hand = true;
       this.redoStack = [];
       this.invalidate(page, boxId);
       this.changed(page, [boxId], top, 'do');
       return;
     }
     const wasEdited = box.edited;
-    this.push({ kind: 'style', page, box: boxId, para, patch: clone(patch), before, wasEdited }, [box]);
+    const wasHand = !!box.hand;
+    box.hand = true;
+    this.push({ kind: 'style', page, box: boxId, para, patch: clone(patch), before, wasEdited, wasHand }, [box]);
   }
 
   /** Character spacing 0 on every run of the box: the one-click reset for tracking carried over from the source. */
@@ -192,6 +215,7 @@ export class Editor {
     if (opts.merge && top && top.kind === 'frame' && top.page === page && top.box === boxId) {
       box.frame = { ...frame };
       box.heightPinned = pinned;
+      box.hand = true;
       top.frame = { ...frame };
       top.pinned = pinned;
       this.redoStack = [];
@@ -202,9 +226,11 @@ export class Editor {
     const before = { ...box.frame };
     const pinnedBefore = box.heightPinned;
     const wasEdited = box.edited;
+    const wasHand = !!box.hand;
     box.frame = { ...frame };
     box.heightPinned = pinned;
-    this.push({ kind: 'frame', page, box: boxId, frame: { ...frame }, before, wasEdited, pinned, pinnedBefore }, [box]);
+    box.hand = true;
+    this.push({ kind: 'frame', page, box: boxId, frame: { ...frame }, before, wasEdited, wasHand, pinned, pinnedBefore }, [box]);
   }
 
   /** Pins the box's height at its current frame, or lets it follow the text. */
@@ -258,6 +284,7 @@ export class Editor {
       source: { ...clone(box.source), baseline: undefined, axis: undefined },
     };
     pg.boxes.splice(pg.boxes.indexOf(box) + 1, 0, nb);
+    for (const h of boxHooks) h.split?.(pg, box, nb);
     const orderAfter = pg.boxes.map((b) => b.id);
     this.push({ kind: 'split', page, boxes: [boxId, id], before, after: [clone(box), clone(nb)], order, orderAfter }, [box, nb]);
     return id;
@@ -283,10 +310,33 @@ export class Editor {
     A.edited = true;
     A.heightPinned = A.heightPinned && B.heightPinned;
     pg.boxes.splice(pg.boxes.indexOf(B), 1);
+    for (const h of boxHooks) h.merge?.(pg, A, B, { into: s, gone: t });
     this.invalidate(page, a);
     this.invalidate(page, b);
     const orderAfter = pg.boxes.map((x) => x.id);
     this.push({ kind: 'merge', page, boxes: [a, b], before, after: [clone(A)], order, orderAfter }, [A]);
+  }
+
+  /**
+   * A change to the whole page as one undoable step: `run` may change any box (frames, sizes, text, order, hand marks)
+   * and the page fields named in `fields`; every box and those fields are snapshotted before and after. `label` names
+   * the step for the listeners (Change.edit.label).
+   */
+  pageEdit<T>(page: number, label: string, run: (pg: Page) => T, fields: string[] = []): T {
+    const pg = this.page(page);
+    const order = pg.boxes.map((b) => b.id);
+    const before = pg.boxes.map((b) => clone(b));
+    const snap = () => Object.fromEntries(fields.map((k) => [k, clone((pg as unknown as Record<string, unknown>)[k])]));
+    const fieldsBefore = snap();
+    const out = run(pg);
+    const after = pg.boxes.map((b) => clone(b));
+    const ids = pg.boxes.map((b) => b.id);
+    for (const id of new Set([...order, ...ids])) this.invalidate(page, id);
+    const e: Edit = { kind: 'page', label, page, boxes: ids, before, after, order, orderAfter: ids, fieldsBefore, fieldsAfter: snap() };
+    this.undoStack.push(e);
+    this.redoStack = [];
+    this.changed(page, ids, e, 'do');
+    return out;
   }
 
   // ── undo / redo ──────────────────────────────────────────────────────────
@@ -326,6 +376,7 @@ export class Editor {
       if (fwd) applyStyle(box, e.para, e.patch as StylePatch);
       else restoreParas(box, e.before as ParaSnap[]);
       box.edited = fwd ? true : (e.wasEdited ?? true);
+      setHand(box, fwd || !!e.wasHand);
       this.invalidate(e.page, e.box);
       this.changed(e.page, [e.box], e, how);
     } else if (e.kind === 'frame') {
@@ -334,6 +385,7 @@ export class Editor {
       const pin = fwd ? e.pinned : e.pinnedBefore;
       if (pin !== undefined) box.heightPinned = pin;
       box.edited = fwd ? true : (e.wasEdited ?? true);
+      setHand(box, fwd || !!e.wasHand);
       this.invalidate(e.page, e.box);
       this.changed(e.page, [e.box], e, how);
     } else {
@@ -343,6 +395,8 @@ export class Editor {
       for (const b of restore) map.set(b.id, clone(b));
       const ids = fwd ? (e.orderAfter ?? []) : (e.order ?? []);
       pg.boxes = ids.map((id) => map.get(id)).filter((b): b is Box => !!b);
+      const fields = fwd ? e.fieldsAfter : e.fieldsBefore;
+      if (fields) for (const [k, v] of Object.entries(fields)) setField(pg, k, v);
       const touched = [...new Set([...e.boxes, ...restore.map((b) => b.id)])];
       for (const id of touched) this.invalidate(e.page, id);
       this.changed(e.page, touched, e, how);
@@ -402,6 +456,11 @@ function leadIn(runs: Run[], base: Run | undefined, text: string): number {
   const m = /^(.+?(?:[:：]|\s[–—-]))\s*/u.exec(text);
   if (!m || m[1].length < 2 || m[0].length >= text.length || m[0].length > Math.max(60, 0.5 * text.length)) return 0;
   return m[0].length;
+}
+
+function setHand(box: Box, on: boolean): void {
+  if (on) box.hand = true;
+  else delete box.hand;
 }
 
 function paraOf(box: Box, para: number): Paragraph {
@@ -540,4 +599,10 @@ function unionRect(a: Rect, b: Rect): Rect {
 
 function clone<T>(x: T): T {
   return structuredClone(x);
+}
+
+function setField(pg: Page, key: string, value: unknown): void {
+  const rec = pg as unknown as Record<string, unknown>;
+  if (value === undefined) delete rec[key];
+  else rec[key] = clone(value);
 }

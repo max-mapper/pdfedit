@@ -86,6 +86,16 @@ emit(layout: Layout, at: { x: number; yTop: number }, fontKey: (face: Face) => s
 
 The source files' header comments are authoritative; this is the map.
 
+- `src/engine/view.ts`: `page.view: ViewBox` (`rotate`, `crop`, `media`, shown `w`/`h`); `toView`/`fromView`,
+  `rectToView`/`rectFromView`, `rectToPixels` map user space onto the page as PDFium renders it (/Rotate, crop box).
+  `diffOutside(a, b, regions, scale, view | pageH)` takes the view.
+- `src/engine/pdfium.ts`: `page.objects(): EngineObject[]` (every object in paint order, forms entered, page-space
+  bounds and quad, marks), `page.paintsAt(indices, x, y)` (the render hit test: does hiding the object change the
+  pixel there).
+- `src/objects/`: the page object model, read-only. `readObjects(edit, page, crop)` walks the content stream (forms
+  entered) into `PageObject`s in paint order (`id` = content path and operator index, `bounds`, `ctm`, `clips`,
+  `marked`, `group`, `children` for forms) and `Clip`s with their user counts; `pageObjects(edit, pdfPage)` matches
+  them with `page.objects()`; `listObjects(bytes, pages?)`; `bin/pdfedit.ts objects`.
 - `src/engine/pdfium.ts`: `page.shapes(): Shape[]` (paths, images, shadings: bounds in page space, fill, stroke,
   `isRect`, `isRule`, `pathSegs`, `z`); `Char.fontSize` is the effective size (Tf × text-matrix scale), `fontSizeRaw` PDFium's;
   `TextObj.z` paint order; `decryptCopy`, `repairCopy`, `security`, `PdfiumOpenError`.
@@ -96,10 +106,23 @@ The source files' header comments are authoritative; this is the map.
   (forms flattened). `Paragraph.src` (`SourceLines`, filled by build) is where the source drew each line; `layoutBox`
   keeps unchanged source lines there (src/text `layoutSourceLines`). `Editor.editText(page, box, texts)` is the
   editors' typing (a diff over the box's paragraph texts; a paragraph added or removed is one `'paras'` edit).
+  `Box.hand` marks a box a person adjusted by hand: `setFrame`, `setHeightPinned` and `setStyle` set it (undo takes
+  it back); text edits do not. `Editor.pageEdit(page, label, run, fields?)` is a change to the whole page as one undo
+  step (every box and the named page fields snapshotted). Seams for optional modules: `addPageBuilder(fn)`
+  (src/model/build.ts: more page data on every page built), `addBoxHooks({ split, merge })` (src/model/edit.ts),
+  `addPageWriter(fn)` (src/export/export.ts: more changes written into an edited page, with their pixel regions),
+  `addObjectOpSource({ wants, ops })` (src/export/objects.ts: object ops a module adds to a page at export, written
+  in the same surgery as `Page.objectOps` and checked by the same verification; its report fields are its own).
+  `loadFonts(sources, { catalog })` takes a catalogue source that may answer with a Promise.
   `src/model/caret.ts`: `caretLines`, `caretRect`, `hitTest`, `lineMove`, `lineEdge`, `selectionRects` from a
   `LaidBox` (glyph `c`/`p`, line `start`/`end`/`pEnd`).
 - `web/textinput.ts`: `TextInput`, the selected box's text input shared by app/ and web/ (a hidden textarea; the caret
   and the selection drawn from the layout).
+- `app/toolhost.ts`, `app/connector.ts`, `app/opshost.ts`: the editor's optional modules, loaded from folders when
+  present: tools (`app/tools/*.ts`: toolbar groups, panel cards, page layers, marks on frames, preview underlays),
+  a connector (`app/connectors/*.ts`: the document from and to a host application, edit gates) and worker ops
+  (`app/ops/*.ts`, `ToolHost.callWorker(op, args)`). `web/toolhost.ts` does the same for `web/tools/*.ts`, and
+  `bin/pdfedit.ts` loads `bin/commands/<name>.ts`.
 - `src/export/export.ts`: `exportDoc(original, doc, laid, opts?) → { bytes, report }`, `verifyExport`.
 - `src/export/replace.ts`: `replaceText(bytes, table, opts?) → { bytes, doc, replaced, overflow, substitutions, export,
   stats }` (exact paragraph replacements, headless; `bin/pdfedit.ts replace`). A longer text stays in its box and may

@@ -24,18 +24,21 @@
 //      repaired input);
 //   5. verification: the output is re-opened in PDFium; each written box's new text must extract inside its frame
 //      (the whole page's text as a fallback) and its old text be gone; pixels outside the edited regions must not
-//      change; every page must open and render.
+//      change; every page must open and render; and each page writer's own check passes.
+//
+// Page writers (addPageWriter) write more changes into a page between steps 1 and 4, on pages with edited boxes and on
+// pages a writer asks for (object edits, src/export/objects.ts), with their regions and checks added to step 5.
 
 import pako from 'pako';
 import { PDFArray, PDFDict, PDFName, PDFRef, PDFStream, type PDFContext, type PDFObject } from 'pdf-lib';
-import { openPdfium, PdfiumOpenError, type Char, type Pdfium, type Rect, type TextObj } from '../engine/pdfium.ts';
+import { openPdfium, PdfiumOpenError, type Char, type Pdfium, type PdfDoc, type Rect, type TextObj } from '../engine/pdfium.ts';
 import { diffOutside } from '../engine/diff.ts';
-import { openForEdit, type PdfEdit } from '../pdf/edit.ts';
+import { openForEdit, type PageResources, type PdfEdit } from '../pdf/edit.ts';
 import { inheritedResources, lookupByName, resolve, type FontInfo } from '../pdf/fonts.ts';
 import { readTail } from '../pdf/incremental.ts';
 import { matchObjects, type ObjectKey, type SiteKey } from '../pdf/match.ts';
 import { apply, mul, type Op, type TextShow } from '../pdf/ops.ts';
-import { blankOutDetailed, fmtNum, replacementFor } from '../pdf/surgery.ts';
+import { blankOutDetailed, fmtNum, replacementFor, type Replacement } from '../pdf/surgery.ts';
 import { fontDecoder, type FontDecoder } from '../pdf/textdecode.ts';
 import type { Token } from '../pdf/tokenizer.ts';
 import {
@@ -68,6 +71,8 @@ export type ExportOptions = {
   /** Verification: render scale (default 1.5) and per-channel tolerance (default 24). */
   scale?: number;
   tolerance?: number;
+  /** Testing: the bytes the verification reads instead of the output (to show that a changed output fails it). */
+  beforeVerify?: (bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 };
 
 export type FontReport = {
@@ -112,7 +117,36 @@ export type PageVerify = {
   ok: boolean;
 };
 
-export type PageReport = {
+/** What a page writer (addPageWriter) gets: the document being written, the page's model and content tree, the source
+ *  document in PDFium, the page stream's blanking (offsets in the original stream map through `replacements`), the
+ *  edits to make to the page's own stream (offsets in the original stream, mapped), and form use counts. */
+export type PageWriterArgs = {
+  edit: PdfEdit; page: Page; tree: ContentTree; src: PdfDoc;
+  replacements: Replacement[]; pageEdits: { start: number; end: number; text: string }[];
+  uses: () => Map<string, number>;
+};
+/** What a page writer's own verification gets: the output (as the verification reads it), PDFium, the output opened
+ *  for reading streams (shared by the page checks), and the page's check. Returns failures as sentences. */
+export type PageVerifier = (v: { output: Uint8Array; pdfium: Pdfium; outEdit: () => Promise<PdfEdit>; check: PageCheck }) =>
+  string[] | Promise<string[]>;
+/** Writes more changes into an edited page during export, after its text is blanked and before its stream is saved:
+ *  the regions whose pixels may change (old and new places), fields to add to the page's report, and a check of its
+ *  own for the verification pass. */
+export type PageWriter = (a: PageWriterArgs) => PageWritten | null | Promise<PageWritten | null>;
+export type PageWritten = {
+  regions: Rect[]; report?: Record<string, unknown>; verify?: PageVerifier;
+  /** Content painted on top of the page in a new stream (appendContent), made in the save step after every other
+   *  change to the page, so the names it picks see the page's final resources. */
+  append?: () => { content: Uint8Array; resources: PageResources } | null;
+};
+const pageWriters: { w: PageWriter; wants?: (page: Page) => boolean }[] = [];
+/** Adds a page writer to every export (once). `wants`: pages without edited boxes it writes too. */
+export function addPageWriter(w: PageWriter, wants?: (page: Page) => boolean): void {
+  if (!pageWriters.some((x) => x.w === w)) pageWriters.push({ w, wants });
+}
+const wanted = (page: Page) => pageWriters.some((x) => x.wants?.(page));
+
+export interface PageReport {
   page: number;
   written: BoxWritten[];
   skipped: { box: string; reason: string }[];
@@ -132,7 +166,7 @@ export type PageReport = {
   fontBytes: number;        // bytes of the fonts first used on this page
   growth: number;           // (contentBytes + fontBytes) / original file size
   verify: PageVerify | null;
-};
+}
 
 export type ExportReport = {
   ok: boolean;              // nothing failed (verification included when it ran)
@@ -171,6 +205,10 @@ export type PageCheck = {
   /** `frame`: where the new text was laid (page space); its text is read from the characters inside it. */
   boxes: { box: string; newText: string; oldPieces: string[]; frame?: Rect }[];
   regions: Rect[];          // page rectangles that may change
+  /** Page writers' own checks (addPageWriter). */
+  verifiers?: PageVerifier[];
+  /** Operators added in front of the page's own content in the output (appendContent's q bracket): 0 or 1. */
+  prefixOps?: number;
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -187,6 +225,19 @@ const stripSubset = (n: string) => n.replace(/^[A-Z]{6}\+/, '');
 
 /** Every character of `needle` occurs in `hay` in order (other characters, e.g. a neighbour's glyphs that overlap the
  *  frame and that PDFium's reading order interleaves, may come between). */
+/** Characters in the order of horizontal lines in user space: lines by baseline from the top (a new line where the
+ *  baseline moves by more than half the font size), each from left to right. */
+function byLines(chars: Char[]): Char[] {
+  const sorted = [...chars].sort((a, b) => b.origin[1] - a.origin[1]);
+  const lines: Char[][] = [];
+  for (const ch of sorted) {
+    const line = lines[lines.length - 1];
+    if (line && Math.abs(line[0].origin[1] - ch.origin[1]) <= 0.5 * Math.max(1, line[0].fontSize)) line.push(ch);
+    else lines.push([ch]);
+  }
+  return lines.flatMap((l) => l.sort((a, b) => a.origin[0] - b.origin[0]));
+}
+
 function subsequence(needle: string, hay: string): boolean {
   if (!needle) return true;
   const n = [...needle];
@@ -305,6 +356,10 @@ type Cand = {
 type PagePlan = {
   page: Page; report: PageReport; cands: Cand[]; content: Uint8Array[]; keys: Set<string>; check: PageCheck;
   fontAliases: Record<string, PDFRef>;
+  /** A page writer wrote into the page. */
+  wrote: boolean;
+  /** Page writers' content for the top of the page (PageWritten.append). */
+  appends?: NonNullable<PageWritten['append']>[];
 };
 
 /** One code of a shown string and the PDFium characters it produced. */
@@ -452,7 +507,7 @@ export async function exportDoc(
   const incremental = opts.incremental !== false && !decrypted && !repaired;
   if (opts.incremental !== false && !incremental) notes.push('an incremental update was asked for; the copy is written with a full save instead');
   const ctx = edit.context;
-  const editedPages = doc.pages.filter((p) => p.boxes.some((b) => b.edited));
+  const editedPages = doc.pages.filter((p) => p.boxes.some((b) => b.edited) || wanted(p));
 
   // Resource names for the new fonts that no edited page already uses.
   const taken = new Set(editedPages.flatMap((p) => fontNames(edit, p.n)));
@@ -479,7 +534,7 @@ export async function exportDoc(
         unmatched: 0, operatorsSplit: 0, formsEdited: [], formsCopied: [], fonts: [], tagged: false,
         contentBytes: 0, fontBytes: 0, growth: 0, verify: null,
       };
-      const plan: PagePlan = { page, report: pr, cands: [], content: [], keys: new Set(), check: { page: n, boxes: [], regions: [] }, fontAliases: {} };
+      const plan: PagePlan = { page, report: pr, cands: [], content: [], keys: new Set(), check: { page: n, boxes: [], regions: [] }, fontAliases: {}, wrote: false };
       plans.push(plan);
       const skip = (box: Box, reason: string) => pr.skipped.push({ box: box.id, reason });
 
@@ -637,7 +692,7 @@ export async function exportDoc(
         }
       }
       plan.cands = cands;
-      if (!cands.length) continue;
+      if (!cands.length && !wanted(page)) continue;
       pr.operatorsSplit = splits.size;
 
       // 2. blank, per stream
@@ -782,6 +837,16 @@ export async function exportDoc(
       }
       for (const r of pageRenames) pageEdits.push({ start: mapOffset(replacements, r.call.nameStart), end: mapOffset(replacements, r.call.nameEnd), text: pdfName(r.name) });
       if (pageRenames.length) edit.addPageXObjects(n, Object.fromEntries(pageRenames.map((r) => [r.name, r.ref])));
+      // changes other modules write into the page (addPageWriter); their regions may change pixels
+      for (const { w } of pageWriters) {
+        const got = await w({ edit, page, tree, src, replacements, pageEdits, uses: () => (uses ??= formUses(edit)) });
+        if (!got) continue;
+        plan.wrote = true;
+        if (got.report) Object.assign(pr, got.report);
+        plan.check.regions.push(...got.regions);
+        if (got.verify) (plan.check.verifiers ??= []).push(got.verify);
+        if (got.append) (plan.appends ??= []).push(got.append);
+      }
       if (rootBlanks.size || pageEdits.length) {
         const finalContents = pageEdits.length ? spliceBytes(blanked, pageEdits) : blanked;
         edit.setContents(n, finalContents);
@@ -802,20 +867,30 @@ export async function exportDoc(
     firstPage.set(key, Math.min(...kf.pages));
   }
   for (const plan of plans) {
-    if (!plan.cands.length) continue;
     const n = plan.page.n;
+    // page writers' content goes on top of everything, the new text included
+    const appendWriters = () => {
+      for (const make of plan.appends ?? []) {
+        const got = make();
+        if (!got) continue;
+        plan.check.prefixOps = edit.appendContent(n, got.content, got.resources);
+        plan.report.contentBytes += pako.deflate(got.content).length;
+      }
+    };
+    if (!plan.cands.length) { appendWriters(); continue; }
     if (plan.content.length) {
       const content = concat(plan.content);
       const pageRefs: Record<string, PDFRef> = { ...plan.fontAliases };
       for (const k of plan.keys) pageRefs[k] = refs[k];
-      edit.appendContent(n, content, pageRefs);
+      plan.check.prefixOps = edit.appendContent(n, content, pageRefs);
       plan.report.contentBytes += pako.deflate(content).length;
     }
+    appendWriters();
     plan.report.fonts = fonts.filter((f) => plan.keys.has(f.key)).map((f) => ({ key: f.key, face: f.face, glyphs: f.glyphs, bytes: f.bytes }));
     plan.report.fontBytes = fonts.filter((f) => firstPage.get(f.key) === n).reduce((s, f) => s + f.bytes, 0);
     plan.report.growth = (plan.report.contentBytes + plan.report.fontBytes) / original.length;
   }
-  const written = plans.filter((p) => p.cands.length);
+  const written = plans.filter((p) => p.cands.length || p.wrote);
   const bytes = edit.save({ incremental });
 
   const report: ExportReport = {
@@ -828,7 +903,8 @@ export async function exportDoc(
   // 5. verification
   const verify = opts.verify ?? true;
   if (verify) {
-    const v = await verifyExport(original, bytes, written.map((p) => p.check), { ...opts, pdfium: P });
+    const seen = opts.beforeVerify ? await opts.beforeVerify(bytes) : bytes;
+    const v = await verifyExport(original, seen, written.map((p) => p.check), { ...opts, pdfium: P });
     report.verified = true;
     report.allPagesRender = v.allPagesRender;
     report.failures = v.failures;
@@ -899,6 +975,8 @@ export async function verifyExport(
   }
   const b = P.open(original);
   let allPagesRender = true;
+  let outEditP: Promise<PdfEdit> | null = null;
+  const outEdit = () => (outEditP ??= openForEdit(output));
   try {
     if (a.pageCount !== b.pageCount) failures.push(`the output has ${a.pageCount} pages, the original ${b.pageCount}`);
     const checked = new Set(checks.map((c) => c.page));
@@ -928,10 +1006,15 @@ export async function verifyExport(
         const after = norm(afterChars.map((ch) => ch.unicode).join(''));
         const before = norm(pb.chars().map((ch) => ch.unicode).join(''));
         // the text inside a frame: the characters whose box centres lie in it (1 pt slack), in PDFium's order
-        const inside = (f: Rect) => norm(afterChars.filter((ch) => {
+        const within = (f: Rect) => afterChars.filter((ch) => {
           const cx = (ch.box.x0 + ch.box.x1) / 2, cy = (ch.box.y0 + ch.box.y1) / 2;
           return cx >= f.x0 - 1 && cx <= f.x1 + 1 && cy >= f.y0 - 1 && cy <= f.y1 + 1;
-        }).map((ch) => ch.unicode).join(''));
+        });
+        const inside = (f: Rect) => norm(within(f).map((ch) => ch.unicode).join(''));
+        // the same characters in the order of the box's lines in user space (top line first, left to right): PDFium
+        // reads a page turned by /Rotate in the order the lines are shown, which for horizontal text on a turned page
+        // is not the box's own order
+        const insideByLines = (f: Rect) => norm(byLines(within(f)).map((ch) => ch.unicode).join(''));
         const news = c.boxes.map((x) => norm(x.newText));
         // old text: each distinct piece must occur fewer times than before, by the number of boxes that removed it
         const need = new Map<string, number>();
@@ -947,7 +1030,8 @@ export async function verifyExport(
           // inside the laid frame first (a page-level reading may interleave the box with a line beside it), the
           // whole page's text as the fallback
           const region = x.frame !== undefined ? inside(x.frame) : '';
-          const newPresent = news[i] === '' || region.includes(news[i]) || after.includes(news[i]) || subsequence(news[i], region);
+          let newPresent = news[i] === '' || region.includes(news[i]) || after.includes(news[i]) || subsequence(news[i], region);
+          if (!newPresent && x.frame !== undefined) { const lines = insideByLines(x.frame); newPresent = lines.includes(news[i]) || subsequence(news[i], lines); }
           const r = x.oldPieces.map((s) => segOk.get(s) ?? null);
           const oldAbsent = r.some((q) => q === false) ? false : r.some((q) => q === true) ? true : null;
           v.text.push({ box: x.box, newPresent, oldAbsent });
@@ -959,13 +1043,20 @@ export async function verifyExport(
           const ra = pa.render(scale);
           rendered = true;
           const rb = pb.render(scale);
-          const d = diffOutside(rb, ra, c.regions, scale, pb.size.h, opts.tolerance ?? 24);
+          const d = diffOutside(rb, ra, c.regions, scale, pb.view, opts.tolerance ?? 24);
           v.pixelsChangedOutside = d.differing;
           v.pixelsCompared = d.total;
           if (d.differing > maxOut) failures.push(`${at}: ${d.differing} pixels changed outside the edited boxes (allowed ${maxOut})`);
         } catch (e) {
           if (!rendered) allPagesRender = false;
           failures.push(`${at}: render comparison failed: ${(e as Error).message}`);
+        }
+        for (const check of c.verifiers ?? []) {
+          try {
+            for (const f of await check({ output, pdfium: P, outEdit, check: c })) failures.push(`${at}: ${f}`);
+          } catch (e) {
+            failures.push(`${at}: a page check failed to run: ${(e as Error).message}`);
+          }
         }
         v.ok = !failures.some((f) => f.startsWith(at + ':') || f.startsWith(at + ','));
       } finally {

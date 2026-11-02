@@ -1,9 +1,11 @@
 // The editor's document model. Built from detection (src/layout) and the engine (src/engine); edited
 // by the UI (app/, web/); written back by export (src/export). Units: PDF points, y up.
 import type { Rect } from '../engine/pdfium.ts';
+import type { ViewBox } from '../engine/view.ts';
 import type { Face } from '../text/face.ts';
+import type { ObjectOp } from '../objects/ops.ts';
 
-export type { Rect };
+export type { Rect, ViewBox };
 export type RGB = [number, number, number];          // 0–1
 
 /** A font a run is set in: the document's own embedded font (when it has the glyphs) or a shipped substitute. */
@@ -72,7 +74,7 @@ export type SourceLines = {
 };
 
 /** What the box looked like before any edit. */
-export type SourceState = {
+export interface SourceState {
   frame: Rect;             // the box as detected
   paragraphs: { text: string; size: number; align: string; leading: number }[];
   objs: number[];          // the page's text object indices that held this box's characters (export removes these)
@@ -82,9 +84,9 @@ export type SourceState = {
   charSpacing?: number;    // the source's measured character spacing (median over the box), points
   angle?: number;          // the source text's angle, degrees
   axis?: number;           // vertical boxes: distance from the source frame's right edge left to the first column's axis
-};
+}
 
-export type Box = {
+export interface Box {
   id: string;
   kind: 'text' | 'cell' | 'label';
   frame: Rect;             // current frame (moved/resized by the user)
@@ -95,28 +97,39 @@ export type Box = {
   edited: boolean;         // export rewrites only edited boxes
   locked: string | null;   // why it cannot be edited (vertical text in v1, Type 3, …), null when editable
   heightPinned: boolean;   // false: the height follows the text (vertical boxes: the width follows the text)
+  /** Optional: a person adjusted the box's layout by hand (moved or resized it, or changed its font, size or style;
+   *  src/model/edit.ts sets it, and a page edit may set it too). Text edits do not set it. Undo takes it back. */
+  hand?: boolean;
   /** Optional (src/model/build.ts fills it): the layout direction. 'vertical-rl' (vertical: true): columns top to
    *  bottom, stacked right to left from the frame's right edge; the frame's height is the column length. */
   writingMode?: 'horizontal-tb' | 'vertical-rl';
-};
+}
 
-export type Page = {
+export interface Page {
   n: number;               // 0-based
-  w: number; h: number;
+  w: number; h: number;    // the page as shown: its crop box, turned by /Rotate (src/engine/view.ts)
   boxes: Box[];
-};
+  /** Optional (src/model/build.ts fills it): how PDF user space maps onto the page as shown (rotation, crop box).
+   *  Absent: no rotation and a crop box at the origin, so user space is the shown page. */
+  view?: ViewBox;
+  /** Optional: edits to the page's objects (move, resize, turn, delete, …; src/objects/ops.ts), in order, recorded
+   *  against the source file's object ids. Export writes them by surgery (src/export/objects.ts). */
+  objectOps?: ObjectOp[];
+}
 
 export type Doc = { pages: Page[]; title?: string };
 
 /** One edit, for undo/redo. */
 export type Edit =
   | { kind: 'text'; page: number; box: string; para: number; runs: Run[]; before: Run[]; wasEdited?: boolean }
-  | { kind: 'style'; page: number; box: string; para: number | null; patch: Partial<Run> & Partial<Pick<Paragraph, 'align' | 'leading' | 'indent'>>; before: unknown; wasEdited?: boolean }
+  | { kind: 'style'; page: number; box: string; para: number | null; patch: Partial<Run> & Partial<Pick<Paragraph, 'align' | 'leading' | 'indent'>>; before: unknown; wasEdited?: boolean; wasHand?: boolean }
   | { kind: 'paras'; page: number; box: string; before: Paragraph[]; after: Paragraph[]; wasEdited?: boolean /* paragraphs added or removed */ }
-  | { kind: 'frame'; page: number; box: string; frame: Rect; before: Rect; wasEdited?: boolean;
+  | { kind: 'frame'; page: number; box: string; frame: Rect; before: Rect; wasEdited?: boolean; wasHand?: boolean;
       pinned?: boolean; pinnedBefore?: boolean /* heightPinned after / before */ }
-  | { kind: 'split' | 'merge'; page: number; boxes: string[]; before: Box[];
-      after?: Box[]; order?: string[]; orderAfter?: string[] /* page box ids before / after, for undo and redo */ };
+  | { kind: 'split' | 'merge' | 'page'; page: number; boxes: string[]; before: Box[];
+      after?: Box[]; order?: string[]; orderAfter?: string[] /* page box ids before / after, for undo and redo */;
+      /** 'page' (Editor.pageEdit): what the step was, and other page fields it changed, before and after. */
+      label?: string; fieldsBefore?: Record<string, unknown>; fieldsAfter?: Record<string, unknown> };
 
 /** A laid-out box: what the preview draws and export writes. Produced by src/model/layout.ts from a Box. */
 export type LaidBox = {

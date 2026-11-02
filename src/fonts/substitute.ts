@@ -7,7 +7,7 @@
 //      ",Bold"-style suffix, and split into tokens; weight, width and slant are read from the tokens (Latin words,
 //      W1–W12, weight letter codes, HG suffixes);
 //   2. a curated alias table names the families for well-known fonts (Arial → Arimo, metric-compatible; Kozuka Gothic
-//      → Noto Sans JP; MS Mincho → BIZ UDMincho; …);
+//      → Noto Sans JP; MS Gothic → IPAGothic for Japanese text, metric-compatible; Myriad → Source Sans 3; …);
 //   3. every family that covers the script the new text needs is scored on classification, alias rank, weight,
 //      width (nominal, or measured from glyph widths), slant, pitch and x-height, and the best few are returned with
 //      the instance to load (file and variation coordinates).
@@ -247,6 +247,8 @@ export type Alias = {
   jpan?: FamilyId[];
   /** latn[0] reproduces the original's advance widths. */
   metric?: boolean;
+  /** jpan[0] reproduces the original's advance widths, kana and kanji included (IPAGothic for MS Gothic). */
+  metricJpan?: boolean;
   weight?: number;
   width?: number;
   fixed?: boolean;
@@ -264,9 +266,9 @@ export const ALIASES: readonly Alias[] = [
   // --- Japanese system and Office fonts
   { re: /^ms(?:ui|pui)?(?:gothic|ゴシック)ui|^msuigothic|^msuiゴシック/, label: 'MS UI Gothic', cls: 'sans', latn: ['biz-udpgothic', 'noto-sans-jp'] },
   { re: /^msp(?:gothic|ゴシック)/, label: 'MS PGothic', cls: 'sans', latn: ['biz-udpgothic', 'noto-sans-jp'] },
-  { re: /^ms(?:gothic|ゴシック)/, label: 'MS Gothic', cls: 'sans', latn: ['biz-udgothic', 'noto-sans-jp'], fixed: true },
+  { re: /^ms(?:gothic|ゴシック)/, label: 'MS Gothic', cls: 'sans', latn: ['biz-udgothic', 'noto-sans-jp'], jpan: ['ipa-gothic', 'biz-udgothic', 'noto-sans-jp'], metricJpan: true, fixed: true },
   { re: /^msp(?:mincho|明朝)/, label: 'MS PMincho', cls: 'serif', latn: ['biz-udpmincho', 'noto-serif-jp'] },
-  { re: /^ms(?:mincho|明朝)/, label: 'MS Mincho', cls: 'serif', latn: ['biz-udmincho', 'noto-serif-jp'], fixed: true },
+  { re: /^ms(?:mincho|明朝)/, label: 'MS Mincho', cls: 'serif', latn: ['biz-udmincho', 'noto-serif-jp'], jpan: ['ipa-mincho', 'biz-udmincho', 'noto-serif-jp'], fixed: true },
   { re: /^(?:meiryo|メイリオ)/, label: 'Meiryo', cls: 'sans', latn: ['noto-sans-jp', 'biz-udpgothic'] },
   { re: /^(?:yugo(?:thic|th)?|游ゴシック)/, label: 'Yu Gothic', cls: 'sans', latn: SANS_JP },
   { re: /^(?:yumin(?:cho)?|游明朝)/, label: 'Yu Mincho', cls: 'serif', latn: SERIF_JP },
@@ -302,9 +304,11 @@ export const ALIASES: readonly Alias[] = [
   { re: /^(?:heisei)?(?:marugo|丸ゴ)|^平成丸ゴ/, label: 'Maru Gothic', cls: 'rounded', latn: ROUND_JP },
   { re: /^(?:heisei(?:kaku)?go|平成角ゴ)/, label: 'Heisei Kaku Gothic', cls: 'sans', latn: ['noto-sans-jp'] },
   { re: /^(?:heiseimin|平成明朝)/, label: 'Heisei Mincho', cls: 'serif', latn: ['noto-serif-jp'] },
-  { re: /^(?:ipa|takao)(?:ex)?p(?:gothic|ゴシック)/, label: 'IPA PGothic', cls: 'sans', latn: ['biz-udpgothic', 'noto-sans-jp'] },
-  { re: /^(?:ipa|takao)(?:ex)?(?:gothic|ゴシック)/, label: 'IPA Gothic', cls: 'sans', latn: ['noto-sans-jp', 'biz-udgothic'] },
-  { re: /^(?:ipa|takao)(?:ex)?p?(?:mincho|明朝)/, label: 'IPA Mincho', cls: 'serif', latn: ['noto-serif-jp', 'biz-udpmincho'] },
+  { re: /^(?:ipa|takao)(?:ex)?p(?:gothic|ゴシック)/, label: 'IPA / IPAex PGothic', cls: 'sans', latn: ['biz-udpgothic', 'noto-sans-jp'] },
+  { re: /^(?:ipa|takao)(?:gothic|ゴシック)/, label: 'IPA Gothic', cls: 'sans', latn: ['biz-udgothic', 'noto-sans-jp'], jpan: ['ipa-gothic', 'biz-udgothic'], metricJpan: true, fixed: true },
+  { re: /^(?:ipa|takao)(?:mincho|明朝)/, label: 'IPA Mincho', cls: 'serif', latn: ['biz-udmincho', 'noto-serif-jp'], jpan: ['ipa-mincho', 'biz-udmincho'], metricJpan: true, fixed: true },
+  { re: /^(?:ipa|takao)ex(?:gothic|ゴシック)/, label: 'IPAex Gothic', cls: 'sans', latn: ['noto-sans-jp', 'biz-udgothic'] },
+  { re: /^(?:ipa|takao)(?:ex)?p?(?:mincho|明朝)/, label: 'IPAex / IPA P Mincho', cls: 'serif', latn: ['noto-serif-jp', 'biz-udpmincho'] },
   // --- HG fonts
   { re: /^hg[sp]?(?:soeikakugothic|創英角ゴシック)/, label: 'HG Soei Kaku Gothic', cls: 'sans', latn: ['noto-sans-jp', 'zen-kaku-gothic-antique'], weight: 900 },
   { re: /^hg[sp]?(?:soeikakupop|創英角ポップ|.*pop|.*ポップ)/, label: 'HG Soei Kaku Pop', cls: 'display', latn: ['mplus-rounded-1c', 'zen-maru-gothic'], weight: 800 },
@@ -571,7 +575,7 @@ export function suggestSubstitutes(info: SourceFontInfo, opts: SuggestOptions = 
     else cost += 0.25;                                                   // an unrecognised name: every choice is a guess
     // by style alone, the generic family of the class comes first (Noto Sans, not Arimo, for an unknown sans)
     if (rank < 0 && DEFAULTS[script][src.classification] !== f.id) cost += 0.1;
-    const metric = rank === 0 && alias?.metric === true && script === 'latn';
+    const metric = rank === 0 && (script === 'latn' ? alias?.metric : alias?.metricJpan) === true;
     if (metric) reasons.push(`metric-compatible with ${alias!.label}`);
 
     const cc = CLASS_COST[src.classification][f.classification];

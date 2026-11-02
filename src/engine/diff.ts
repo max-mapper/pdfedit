@@ -1,15 +1,18 @@
 // Pixel comparison of two renders, outside given regions. Browser-safe (no PNG library).
 import type { Bitmap, Rect } from './pdfium.ts';
+import { rectToPixels, type ViewBox } from './view.ts';
 
 /** Pixels whose RGB differs by more than `tol` (0–255) between two renders of the same size, counted outside the
- *  given regions (page rectangles in PDF points, converted with the render scale and page height). */
-export function diffOutside(a: Bitmap, b: Bitmap, regions: Rect[], scale: number, pageH: number, tol = 24):
+ *  given regions (page rectangles in user space, converted with the render scale and the page's view: a view box, or
+ *  the page height of a plain page). */
+export function diffOutside(a: Bitmap, b: Bitmap, regions: Rect[], scale: number, page: ViewBox | number, tol = 24):
   { differing: number; total: number } {
   if (a.width !== b.width || a.height !== b.height) throw new Error('renders differ in size');
-  const px = regions.map((r) => ({
-    x0: Math.floor(r.x0 * scale) - 2, x1: Math.ceil(r.x1 * scale) + 2,
-    y0: Math.floor((pageH - r.y1) * scale) - 2, y1: Math.ceil((pageH - r.y0) * scale) + 2,
-  }));
+  const view = typeof page === 'number' ? null : page, pageH = typeof page === 'number' ? page : page.h;
+  const px = regions.map((r) => {
+    const q = rectToPixels(view, r, scale, pageH);
+    return { x0: Math.floor(q.x0) - 2, x1: Math.ceil(q.x1) + 2, y0: Math.floor(q.y0) - 2, y1: Math.ceil(q.y1) + 2 };
+  });
   let differing = 0, total = 0;
   for (let y = 0; y < a.height; y++) {
     for (let x = 0; x < a.width; x++) {

@@ -14,16 +14,29 @@
 // current model is exported in the worker (incremental, verify 'report') and the result rendered by PDFium. The page
 // then shows that true render and the overlay keeps only boxes changed since (and boxes export refused). A burst of
 // edits makes one export; a commit overtaken by a newer edit is skipped or ignored.
+//
+// Optional modules (present in some builds): tools (app/tools/*.ts, app/toolhost.ts) add controls, panels, page layers
+// and marks on box frames; a connector (app/connectors/*.ts, app/connector.ts) connects the editor to a host
+// application, which then supplies the document and may refuse edits; worker ops (app/ops/*.ts) run in the worker.
+//
+// Pages are shown as PDFium renders them: a crop box away from the origin and /Rotate are mapped through the page's
+// view (src/engine/view.ts). On a turned page the overlay draws the text turned (app/overlay.ts), the caret and the
+// selection follow it, and the edit box's handles act on the edges they sit on as shown.
 import { faceGroups, catalogLabel } from './fontpicker.ts';
 import { prepareSubstitutes } from '../src/fonts/apply.ts';
 import { loadAppFonts, oflUrl } from './assets.ts';
+import { availableTools, type BoxNote, type ToolHooks, type ToolHost } from './toolhost.ts';
+import { loadConnector, type Connector, type ConnectorHost } from './connector.ts';
+import { dragInUser, fromView, rectToPixels, rectToView, type ViewBox } from '../src/engine/view.ts';
+import type { PageReport } from '../src/export/export.ts';
 import type { FontRegistry } from '../src/model/fonts.ts';
 import { substituteRef, hasCjk, parseCatalogFaceId } from '../src/model/fonts.ts';
 import { Editor, type Change, type StylePatch } from '../src/model/edit.ts';
 import { TextInput } from '../web/textinput.ts';
+import { caretLines, hitTest } from '../src/model/caret.ts';
 import type { Box, Doc, FontRef, LaidBox, Page, Rect } from '../src/model/types.ts';
 import type { ExportReport } from '../src/export/export.ts';
-import { drawnRect } from '../web/preview.ts';
+import { drawnRect, viewOf, type Underlay } from '../web/preview.ts';
 import { Overlay, type OverlayMode } from './overlay.ts';
 import { History } from './history.ts';
 import { exportReportView, h } from './reports.ts';
@@ -36,6 +49,7 @@ const ZMIN = 0.5, ZMAX = 4;
 const DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 const MAX_PIXELS = 24e6;                  // a page bitmap's device pixels at most (memory); beyond, CSS scales it up
 const IDLE_MS = 800;                      // no edit for this long: commit the page
+const OBJECT_MS = 30;                     // an object edit (a move, a delete, an added image) commits this soon
 const KEEP_BITMAPS = 10;                  // pages whose bitmaps stay in memory while off screen
 const THUMB_W = 120;
 
@@ -49,6 +63,11 @@ const editbox = $<HTMLDivElement>('editbox');
 const ta = $<HTMLTextAreaElement>('ta');
 const caretEl = $<HTMLDivElement>('caret');
 const selLayer = $<HTMLDivElement>('selrects');
+// a connector's marks inside the text box while it is edited (a layer of the edit box: the page and the export never
+// see it)
+const decoLayer = document.createElement('div');
+decoLayer.id = 'boxdeco';
+selLayer.before(decoLayer);
 const fileInput = $<HTMLInputElement>('file');
 const ui = {
   open: $<HTMLButtonElement>('open'), open2: $<HTMLButtonElement>('open2'), docname: $<HTMLSpanElement>('docname'),
@@ -82,7 +101,7 @@ let fontListKey = '';
 // ── state ───────────────────────────────────────────────────────────────────────────────────────────────────
 type Bitmap = { img: ImageData; scale: number };
 type PageView = {
-  n: number; w: number; h: number;
+  n: number; w: number; h: number; view: ViewBox | null;
   el: HTMLDivElement; base: HTMLCanvasElement; over: HTMLCanvasElement; frames: HTMLDivElement; loading: HTMLDivElement;
   thumb: HTMLButtonElement; thumbCanvas: HTMLCanvasElement; thumbDot: HTMLSpanElement; thumbSource: string;
   visible: boolean; thumbVisible: boolean; seen: number;
@@ -95,6 +114,7 @@ type PageView = {
   committed: { id: number; rects: Map<string, Rect>; ids: Set<string> } | null;
   inflight: { id: number; version: number; rects: Map<string, Rect>; ids: Set<string> } | null;
   refused: Map<string, string>; failures: string[]; timer: number;
+  layers: Map<string, HTMLDivElement>;   // tools' layers over the frames
 };
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -129,6 +149,88 @@ const laidFn = (n: number) => (b: Box): LaidBox => editor!.cache!.get(n, b);
 const findBox = (n: number, id: string) => pageOf(n)?.boxes.find((b) => b.id === id);
 const paraText = (b: Box, i: number) => b.paragraphs[i].runs.map((r) => r.text).join('');
 const msg = (s: string) => { ui.stMsg.textContent = s; ui.stMsg.title = s; };
+/** A connector's read-only view: an edit is refused with the reason. True when refused. */
+const readOnlyRefused = (): boolean => { const why = connector?.readOnly ?? null; if (why) msg(why); return !!why; };
+
+// ── worker ops and events (app/opshost.ts, app/toolhost.ts) ─────────────────────────────────────────────────
+let opSeq = 0;
+const opWaiting = new Map<number, { ok: (v: unknown) => void; fail: (e: Error) => void }>();
+function callWorker<T>(op: string, args?: unknown): Promise<T> {
+  const id = ++opSeq;
+  return new Promise<T>((ok, fail) => { opWaiting.set(id, { ok: ok as (v: unknown) => void, fail }); send({ kind: 'op', id, op, args }); });
+}
+const listeners = new Map<string, Set<(data: unknown) => void>>();
+const on = (event: string, fn: (data: unknown) => void) => {
+  let set = listeners.get(event);
+  if (!set) listeners.set(event, (set = new Set()));
+  set.add(fn);
+  return () => { set!.delete(fn); };
+};
+const emit = (event: string, data?: unknown) => { for (const fn of [...(listeners.get(event) ?? [])]) fn(data); };
+
+const labs = new URL(location.href).searchParams.has('labs');
+const toolHost: ToolHost = {
+  doc: () => doc, editor: () => editor, history: () => history,
+  laid: (n, b) => laidFn(n)(b),
+  selected: () => sel, current: () => current,
+  select: (n, id) => select(n, id), scrollToPage: (n) => scrollToPage(n), msg,
+  endEditing: () => { if (editing) stopEditing(); },
+  deselect: () => { if (sel) deselect(); },
+  refused: () => connector?.readOnly ?? null,
+  toolbar: (el) => { el.classList.add('grp'); document.querySelector('#bar .spacer')!.before(el); },
+  panel: (el) => { el.classList.add('card'); $('exprep').before(el); },
+  pageLayer: () => null,   // each tool gets its own (hostFor)
+  placePct: (el, n, r) => { const v = views[n]; if (v) placePct(el, v, r); },
+  fromClient: (n, x, y) => {
+    const v = views[n];
+    if (!v) return null;
+    const pr = v.el.getBoundingClientRect(), z = Z();
+    const [ux, uy] = fromView(v.view, (x - pr.left) / z, v.h - (y - pr.top) / z);
+    return { x: ux, y: uy };
+  },
+  refreshPage: (n) => { const v = views[n]; if (v) { buildFrames(v); paint(v); } },
+  refresh: () => updateAll(),
+  callWorker, on, emit,
+  get connector() { return connector; },
+  labs,
+};
+const tools: { id: string; hooks: ToolHooks }[] = [];
+/** A tool's host: the shared one with the tool's own page layers. */
+const hostFor = (id: string): ToolHost => ({
+  ...toolHost,
+  toolbar: (el) => { el.dataset.tool = id; toolHost.toolbar(el); },
+  panel: (el) => { el.dataset.tool = id; toolHost.panel(el); },
+  pageLayer: (n) => {
+    const v = views[n];
+    if (!v) return null;
+    let l = v.layers.get(id);
+    if (!l) { l = h('div', { class: 'tool-layer', 'data-tool': id }) as HTMLDivElement; v.layers.set(id, l); v.el.insertBefore(l, v.loading); }
+    return l;
+  },
+});
+
+const connectorHost: ConnectorHost = {
+  open: (bytes, name) => openBytes(bytes, name),
+  fonts: () => fonts, doc: () => doc, editor: () => editor, version: () => globalVersion,
+  reveal: (n, id) => {
+    scrollToPage(n);
+    if (select(n, id)) editbox.scrollIntoView({ block: 'center', inline: 'nearest' });
+    else if (!findBox(n, id)) msg(`${id} is no longer on page ${n + 1}.`);
+  },
+  msg, refresh: () => updatePanel(),
+  setPage: (n, page, st) => setPage(n, page, st),
+  swapDocument: (key, pages) => swapDocument(key, pages),
+  endEditing: () => { if (editing) stopEditing(); },
+  deselect: () => deselect(),
+  tools: toolHost,
+};
+const loaded = loadConnector(location.href, connectorHost);
+const connector: Connector | null = loaded.connector;
+for (const t of availableTools({ labs, connector: !!connector })) {
+  try { const hooks = t.setup(hostFor(t.id)); tools.push({ id: t.id, hooks: hooks ?? {} }); } catch (err) { console.error(`tool ${t.id}:`, err); }
+}
+const toolUnderlays = (n: number): Underlay[] => tools.map((t) => t.hooks.underlay?.(n)).filter((u): u is Underlay => !!u);
+const boxNotes = (n: number, id: string): BoxNote[] => tools.map((t) => t.hooks.boxNote?.(n, id)).filter((x): x is BoxNote => !!x);
 
 function scaleFor(v: PageView): number {
   return Math.min(Z() * DPR, Math.sqrt(MAX_PIXELS / (v.w * v.h)));
@@ -137,12 +239,15 @@ function scaleFor(v: PageView): number {
 // ── opening a file ──────────────────────────────────────────────────────────────────────────────────────────
 async function openFile(f: File) {
   if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { msg(`${f.name} is not a PDF.`); return; }
+  openBytes(await f.arrayBuffer(), f.name);
+}
+
+function openBytes(bytes: ArrayBuffer, name: string) {
   reset();
-  fileName = f.name;
-  ui.docname.textContent = f.name;
-  ui.docname.title = f.name;
+  fileName = name;
+  ui.docname.textContent = name;
+  ui.docname.title = name;
   msg('Opening…');
-  const bytes = await f.arrayBuffer();
   send({ kind: 'open', bytes }, [bytes]);
 }
 
@@ -158,6 +263,7 @@ function reset() {
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   downloadUrl = null;
   ui.download.hidden = true;
+  for (const t of tools) t.hooks.opened?.(0);
   ui.exportBody.replaceChildren(h('p', { class: 'muted' }, 'Not exported yet.'));
 }
 
@@ -167,14 +273,16 @@ ui.open2.addEventListener('click', () => fileInput.click());
 
 let dragDepth = 0;
 const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; ui.dropmask.hidden = false; });
-window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; ui.dropmask.hidden = true; } });
+window.addEventListener('dragenter', (e) => { if (connector || !hasFiles(e)) return; e.preventDefault(); dragDepth++; ui.dropmask.hidden = false; });
+window.addEventListener('dragleave', (e) => { if (connector || !hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; ui.dropmask.hidden = true; } });
 window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   ui.dropmask.hidden = true;
   const f = [...(e.dataTransfer?.files ?? [])].find((x) => /\.pdf$/i.test(x.name) || x.type === 'application/pdf');
+  if (!f && tools.some((t) => t.hooks.drop?.(e))) return;   // other files a tool takes (an image dropped on a page)
+  if (connector) { msg('This editor opens its document from the host page.'); return; }
   if (f) openFile(f); else msg('Drop a PDF file.');
 });
 
@@ -187,13 +295,19 @@ worker.onmessage = async (e: MessageEvent<Res>) => {
     editor = new Editor(doc, fonts);
     history = new History(editor);
     editor.onChange(onChange);
-    buildViews(m.sizes);
+    buildViews(m.sizes, m.views);
     emptyEl.hidden = true;
     zoom = clamp(fitWidthZoom(), ZMIN, 1.5);
     for (const v of views) sizePage(v);
     syncZoomUi();
     viewer.scrollTop = 0;
     msg(`${m.sizes.length} page${m.sizes.length === 1 ? '' : 's'} opened in ${m.ms} ms. Click a box to select it, double-click to edit.`);
+    if (connector) {
+      // a connector that supplies the pages: renders never ask for a model
+      if (connector.loadsPages) for (const v of views) v.modelAsked = true;
+      connector.opened(views.length);
+    }
+    for (const t of tools) t.hooks.opened?.(views.length);
     updateAll();
     requestAnimationFrame(() => { for (const v of views) ensureRender(v); });
   } else if (m.kind === 'render') {
@@ -238,6 +352,10 @@ worker.onmessage = async (e: MessageEvent<Res>) => {
     const c = v.thumbCanvas;
     c.width = m.width; c.height = m.height;
     c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(m.rgba), m.width, m.height), 0, 0);
+  } else if (m.kind === 'op-result') {
+    const w = opWaiting.get(m.id);
+    opWaiting.delete(m.id);
+    if (w) { if (m.error !== undefined) w.fail(new Error(m.error)); else w.ok(m.result); }
   } else if (m.kind === 'committed') {
     onCommitted(m);
   } else if (m.kind === 'exported') {
@@ -247,11 +365,31 @@ worker.onmessage = async (e: MessageEvent<Res>) => {
   }
 };
 
+// ── a page's model from a connector (ConnectorHost.setPage): frames built, edited boxes committed once on screen ──
+function setPage(n: number, page: Page, st: { detectMs: number; chars: number }) {
+  const v = views[n];
+  if (!v || !doc || doc.pages[n]) return;
+  doc.pages[n] = page;
+  v.detectMs = st.detectMs;
+  v.chars = st.chars;
+  buildFrames(v);
+  const edited = page.boxes.filter((b) => b.edited);
+  if (edited.length) {
+    // boxes the connector edited (or put back): the page commits like an edited one once it is on screen (ensureRender)
+    v.version++;
+    for (const b of edited) v.dirty.add(b.id);
+    if (v.visible) scheduleCommit(v, IDLE_MS);
+  }
+  paint(v);
+  (window as unknown as { __detected: number }).__detected = ((window as unknown as { __detected?: number }).__detected ?? 0) + 1;
+  updateAll();
+}
+
 // ── pages and thumbnails ────────────────────────────────────────────────────────────────────────────────────
 let pageObserver: IntersectionObserver | null = null;
 let thumbObserver: IntersectionObserver | null = null;
 
-function buildViews(sizes: { w: number; h: number }[]) {
+function buildViews(sizes: { w: number; h: number }[], pageViews: ViewBox[] = []) {
   pageObserver?.disconnect();
   thumbObserver?.disconnect();
   pageObserver = new IntersectionObserver((entries) => {
@@ -286,11 +424,11 @@ function buildViews(sizes: { w: number; h: number }[]) {
     thumb.addEventListener('click', () => scrollToPage(n));
     thumbsEl.append(thumb);
     const v: PageView = {
-      n, w: s.w, h: s.h, el, base, over, frames, loading, thumb, thumbCanvas, thumbDot, thumbSource: '',
+      n, w: s.w, h: s.h, view: pageViews[n] ?? null, el, base, over, frames, loading, thumb, thumbCanvas, thumbDot, thumbSource: '',
       visible: false, thumbVisible: false, seen: 0, orig: null, commit: null, wantOrig: 0, wantCommit: 0, modelAsked: false,
       overlay: null, mode: null, frameDivs: new Map(), detectMs: null, chars: 0,
       version: 0, committedVersion: 0, dirty: new Set(), structural: false, committed: null, inflight: null,
-      refused: new Map(), failures: [], timer: 0,
+      refused: new Map(), failures: [], timer: 0, layers: new Map(),
     };
     pageObserver!.observe(el);
     thumbObserver!.observe(thumb);
@@ -318,6 +456,7 @@ function ensureRender(v: PageView) {
     v.wantCommit = s;
     send({ kind: 'render', req: ++reqSeq, n: v.n, scale: s, source: 'commit', commitId: v.committed.id, model: false });
   }
+  if (connector?.loadsPages && doc.pages[v.n] && v.version !== v.committedVersion && !v.inflight && !v.timer) scheduleCommit(v, IDLE_MS);
 }
 
 function requestThumb(v: PageView) {
@@ -367,8 +506,8 @@ function paint(v: PageView) {
   const focused = (b: Box) => sel?.page === v.n && sel.id === b.id;
   const mode: OverlayMode = commitMode
     ? { include: (b) => (b.edited && (v.dirty.has(b.id) || v.refused.has(b.id))) || focused(b), extra: (id) => v.committed?.rects.get(id) }
-    : { include: (b) => b.edited || focused(b), extra: () => undefined };
-  v.overlay = new Overlay(v.over, bmp.img, { k: bmp.img.width / v.w, h: v.h }, mode);
+    : { include: (b) => b.edited || focused(b), extra: () => undefined, underlays: toolUnderlays(v.n) };
+  v.overlay = new Overlay(v.over, bmp.img, viewOf({ h: v.h, view: v.view ?? undefined }, bmp.img.width / v.w), mode);
   const page = pageOf(v.n);
   if (page && editor) v.overlay.drawAll(page, laidFn(v.n));
   else v.over.getContext('2d')!.clearRect(0, 0, v.over.width, v.over.height);
@@ -382,10 +521,11 @@ function redrawBox(n: number, id: string) {
 
 // ── frames ──────────────────────────────────────────────────────────────────────────────────────────────────
 function placePct(el: HTMLElement, v: PageView, r: Rect) {
-  el.style.left = `${(r.x0 / v.w) * 100}%`;
-  el.style.top = `${((v.h - r.y1) / v.h) * 100}%`;
-  el.style.width = `${((r.x1 - r.x0) / v.w) * 100}%`;
-  el.style.height = `${((r.y1 - r.y0) / v.h) * 100}%`;
+  const q = rectToView(v.view, r);
+  el.style.left = `${(q.x0 / v.w) * 100}%`;
+  el.style.top = `${((v.h - q.y1) / v.h) * 100}%`;
+  el.style.width = `${((q.x1 - q.x0) / v.w) * 100}%`;
+  el.style.height = `${((q.y1 - q.y0) / v.h) * 100}%`;
 }
 
 function buildFrames(v: PageView) {
@@ -393,6 +533,7 @@ function buildFrames(v: PageView) {
   v.frames.replaceChildren();
   v.frameDivs.clear();
   if (!page) return;
+  for (const t of tools) t.hooks.frames?.(v.n, page, (el, r) => { placePct(el, v, r); v.frames.append(el); });
   for (const b of page.boxes) {
     const d = h('div', { class: 'frame', 'data-id': b.id }) as HTMLDivElement;
     v.frameDivs.set(b.id, d);
@@ -406,15 +547,18 @@ function updateFrame(v: PageView, b: Box) {
   if (!d || !editor) return;
   const L = b.edited ? laidFn(v.n)(b) : null;
   placePct(d, v, L ? L.frame : b.frame);
+  const notes = boxNotes(v.n, b.id);
   const refused = v.refused.get(b.id);
   d.classList.toggle('edited', b.edited);
   d.classList.toggle('locked', !!b.locked);
   d.classList.toggle('overflow', !!L?.overflow);
+  for (const c of [...d.classList]) if (c.startsWith('note-')) d.classList.remove(c);
+  for (const nt of notes) if (nt.cls) d.classList.add(`note-${nt.cls}`);
   d.classList.toggle('refused', !!refused);
   d.classList.toggle('second', sel?.page === v.n && b.id === second);
   d.hidden = sel?.page === v.n && sel.id === b.id;
   let badge = d.querySelector<HTMLSpanElement>('.badge');
-  const text = refused ? `export refused: ${refused}` : '';
+  const text = refused ? `export refused: ${refused}` : notes.find((nt) => nt.badge)?.badge ?? '';
   if (text) {
     if (!badge) { badge = h('span', { class: 'badge' }) as HTMLSpanElement; d.append(badge); }
     badge.textContent = text;
@@ -466,8 +610,8 @@ function deselect() {
 }
 
 function cssRect(v: PageView, r: Rect) {
-  const z = Z();
-  return { left: r.x0 * z, top: (v.h - r.y1) * z, width: (r.x1 - r.x0) * z, height: (r.y1 - r.y0) * z };
+  const z = Z(), q = rectToView(v.view, r);
+  return { left: q.x0 * z, top: (v.h - q.y1) * z, width: (q.x1 - q.x0) * z, height: (q.y1 - q.y0) * z };
 }
 
 /** The edit box over the laid frame (the box as drawn: the selection outline is what is drawn), with the caret. */
@@ -493,7 +637,28 @@ function placeEditbox() {
     el.title = k.split('').map((c1) => titles[c1]?.[vertical ? 1 : 0]).filter(Boolean).join(' · ');
   }
   drawCaret();
+  decorate();
 }
+
+/** A connector's marks inside the text box while a box is edited. */
+function decorate() {
+  if (!connector?.decorate) return;
+  const b = sel && editing && editor && fonts ? findBox(sel.page, sel.id) : undefined;
+  connector.decorate(decoLayer, b && sel ? { page: sel.page, box: b, laid: laidFn(sel.page)(b), zoom: Z() } : null);
+}
+
+/** The pointer over the edit box: a connector may name what is under it (a tooltip). */
+editbox.addEventListener('pointermove', (e) => {
+  if (!connector?.hover || !sel || !editor || !fonts) return;
+  const b = findBox(sel.page, sel.id), v = views[sel.page];
+  if (!b || !v) return;
+  const pr = v.el.getBoundingClientRect(), z = Z();
+  const [x, y] = fromView(v.view, (e.clientX - pr.left) / z, v.h - (e.clientY - pr.top) / z);
+  const hit = hitTest(caretLines(laidFn(sel.page)(b), b), x, y);
+  const tip = hit ? connector.hover(sel.page, sel.id, hit.para, hit.off) : '';
+  if (tip) editbox.title = tip; else editbox.removeAttribute('title');
+});
+editbox.addEventListener('pointerleave', () => { if (connector?.hover && sel) connector.hover(sel.page, sel.id, 0, null); editbox.removeAttribute('title'); });
 
 // ── the text input (web/textinput.ts): a hidden textarea; the caret and the selection drawn from the laid glyphs ──
 const input = new TextInput({
@@ -507,24 +672,45 @@ const input = new TextInput({
     const v = sel ? views[sel.page] : null;
     if (!v) return null;
     const pr = v.el.getBoundingClientRect(), z = Z();
-    return { x: (clientX - pr.left) / z, y: v.h - (clientY - pr.top) / z };
+    const [x, y] = fromView(v.view, (clientX - pr.left) / z, v.h - (clientY - pr.top) / z);
+    return { x, y };
   },
   toCss: (r, L) => {
-    const z = Z();
-    return { left: (r.x0 - L.frame.x0) * z, top: (L.frame.y1 - r.y1) * z, width: (r.x1 - r.x0) * z, height: (r.y1 - r.y0) * z };
+    const z = Z(), v = sel ? views[sel.page]?.view : null;
+    const q = rectToView(v, r), f = rectToView(v, L.frame);
+    return { left: (q.x0 - f.x0) * z, top: (f.y1 - q.y1) * z, width: (q.x1 - q.x0) * z, height: (q.y1 - q.y0) * z };
   },
   edit: (texts, merge) => {
     if (!editor || !sel) return;
-    const t0 = performance.now();
-    editor.editText(sel.page, sel.id, texts, { merge });   // onChange lays out, redraws and syncs the input
-    stats.reflows.push(performance.now() - t0);
+    if (!textEdit(sel.page, sel.id, texts, merge)) input.sync();   // refused: the text box shows the model again
+  },
+  // a connector may refuse an input before it changes anything
+  guard: (x) => {
+    const b = connector?.refuseInput && sel ? findBox(sel.page, sel.id) : undefined;
+    const why = b && connector?.refuseInput ? connector.refuseInput(sel!.page, b, x) : null;
+    if (why) msg(why);
+    return !why;
   },
   onPara: (i) => { focusPara = i; updatePanel(); },
+  onCaret: (p) => { if (connector?.caret && sel) connector.caret(sel.page, sel.id, p.para, p.off); },
 });
+
+/** A typed edit of a box's paragraph texts, through a connector's gate. False when it was refused (the reason shown). */
+function textEdit(page: number, id: string, texts: string[], merge = false): boolean {
+  const b = findBox(page, id);
+  if (!editor || !b) return false;
+  const why = connector?.refuseText?.(page, b, texts) ?? null;
+  if (why) { msg(why); return false; }
+  const t0 = performance.now();
+  editor.editText(page, id, texts, { merge });   // onChange lays out, redraws and syncs the input
+  stats.reflows.push(performance.now() - t0);
+  return true;
+}
 const drawCaret = () => input.draw();
 
 function startEditing(x?: number, y?: number) {
   if (!sel || !editor || !findBox(sel.page, sel.id)) return;
+  if (readOnlyRefused()) return;
   editing = true;
   editbox.classList.add('editing');
   placeEditbox();
@@ -539,10 +725,26 @@ function stopEditing() {
   editbox.classList.remove('editing');
   input.stop();
   placeEditbox();
+  if (connector?.hover && sel) connector.hover(sel.page, sel.id, 0, null);
   if (sel) flushCommit(sel.page);
+  connector?.editingEnded?.();
   updateStatus();
 }
 
+// pointer: a press on a page goes to the tools first (ToolHooks.pointerdown; the select tool picks among overlapping
+// objects); one that takes it ends it here. The text input keeps presses inside the box being edited.
+pagesEl.addEventListener('pointerdown', (e) => {
+  if (!editor || e.button !== 0 || !tools.some((tl) => tl.hooks.pointerdown)) return;
+  const t = e.target as HTMLElement;
+  const pageEl = t.closest<HTMLDivElement>('.page');
+  if (!pageEl || (editing && editbox.contains(t))) return;
+  const n = Number(pageEl.dataset.n);
+  const at = toolHost.fromClient(n, e.clientX, e.clientY);
+  if (!at) return;
+  const inBox = editbox.contains(t);
+  const on = { frame: t.closest<HTMLElement>('.frame')?.dataset.id ?? (inBox && sel ? sel.id : null), editbox: inBox, handle: inBox && !!t.closest('.h') };
+  for (const tl of tools) if (tl.hooks.pointerdown?.(e, n, at, on)) { e.preventDefault(); e.stopPropagation(); return; }
+}, { capture: true });
 // pointer: select, shift-click a second box, double-click to edit, drag the selected box or its handles
 pagesEl.addEventListener('pointerdown', (e) => {
   if (!editor) return;
@@ -586,6 +788,7 @@ editbox.addEventListener('pointerdown', (e) => {
   if (!hnd) { input.pointerDown(e, editbox); return; }   // inside the text while editing: the caret, a selection
   if (hnd === 'body' && e.detail > 1) return;          // the second click of a double-click
   e.preventDefault();
+  if (connector?.readOnly) { if (hnd !== 'body') msg(connector.readOnly); return; }
   const b = findBox(sel.page, sel.id)!;
   drag = { h: hnd === 'body' ? 'move' : hnd, x: e.clientX, y: e.clientY, frame: { ...b.frame }, shown: { ...laidFn(sel.page)(b).frame },
     pinned: b.heightPinned, first: true, page: sel.page, id: sel.id, vertical: !!b.vertical, started: hnd !== 'body', pointer: e.pointerId };
@@ -599,9 +802,9 @@ editbox.addEventListener('pointermove', (e) => {
     drag.started = true;
     editbox.setPointerCapture(drag.pointer);
   }
-  const z = Z();
-  const dx = (e.clientX - drag.x) / z, dy = (e.clientY - drag.y) / z;   // points; dy down
-  const f = drag.frame, s = drag.shown, k = drag.h;
+  // points, dy down, on the user-space edges the handle is on (a page turned by /Rotate shows them turned)
+  const { h: k, dx, dy } = dragInUser(views[drag.page]?.view, drag.h, e.clientX - drag.x, e.clientY - drag.y, Z());
+  const f = drag.frame, s = drag.shown;
   let r: Rect;
   let pin = drag.pinned;
   if (k === 'move') {
@@ -634,13 +837,17 @@ function onChange(c: Change) {
   if (c.how === 'do') history?.onDo();
   if (!v) return;
   const page = pageOf(c.page)!;
-  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge';
+  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge' || c.edit.kind === 'page';
   v.version++;
   for (const id of c.boxes) v.dirty.add(id);
   if (structural) v.structural = true;
+  for (const t of tools) t.hooks.changed?.(c);
   if (v.inflight) send({ kind: 'invalidate', n: v.n, version: v.version });
-  scheduleCommit(v, IDLE_MS);
-  // draw: incrementally when the base stays, from scratch when it switches (committed ↔ original) or on a split or merge
+  // an edit of the page's objects is shown by its commit render at once (the preview only stands in until it arrives);
+  // text edits wait for a pause in typing
+  const objectEdit = c.edit.kind === 'page' && !!c.edit.fieldsBefore && 'objectOps' in c.edit.fieldsBefore;
+  scheduleCommit(v, objectEdit ? OBJECT_MS : IDLE_MS);
+  // draw: incrementally when the base stays, from scratch when it switches (committed ↔ original) or on a structural edit
   const want = useCommit(v) ? 'commit' : 'orig';
   if (v.overlay && want === v.mode && !structural) v.overlay.redraw(page, c.boxes, laidFn(c.page));
   else paint(v);
@@ -656,6 +863,7 @@ function onChange(c: Change) {
     }
   }
   if (c.how !== 'do' && c.page !== current && !views[c.page].visible) scrollToPage(c.page);
+  connector?.changed?.(c);
   updatePanel();
   updateStatus();
 }
@@ -679,7 +887,7 @@ function commit(v: PageView) {
   if (v.committedVersion === v.version) return;
   if (v.inflight && v.inflight.version === v.version) return;
   const edited = page.boxes.filter((b) => b.edited);
-  if (!edited.length) {
+  if (!edited.length && !page.objectOps?.length) {
     // nothing left to write: the original render is the page
     v.committed = null; v.commit = null; v.dirty.clear(); v.structural = false; v.refused.clear(); v.failures = [];
     v.committedVersion = v.version; v.inflight = null;
@@ -724,6 +932,7 @@ function onCommitted(m: CommitResult) {
   requestThumb(v);
   ensureRender(v);
   updateStatus();
+  for (const t of tools) t.hooks.committed?.(m.n, { objectsSkipped: m.objectsSkipped ?? [], shown: !!v.committed, ms: m.ms });
 }
 
 type PageState = { kind: 'none' | 'preview' | 'rendering' | 'rendered' | 'refused'; text: string };
@@ -752,7 +961,9 @@ function updateAll() { updatePanel(); updateStatus(); }
 function updatePanel() {
   ui.undo.disabled = !editor?.canUndo;
   ui.redo.disabled = !editor?.canRedo;
-  ui.export.disabled = !doc || exportPending > 0;
+  ui.export.disabled = !doc || exportPending > 0 || (!!connector && !connector.canExport);
+  connector?.selection?.(sel?.page ?? null, sel?.id ?? null);
+  for (const t of tools) t.hooks.updated?.();
   if (!sel || !editor || !fonts) { ui.typo.setAttribute('aria-disabled', 'true'); return; }
   const b = findBox(sel.page, sel.id);
   if (!b) return;
@@ -804,8 +1015,12 @@ function updatePanel() {
   ui.pin.checked = b.heightPinned;
   ui.merge.disabled = !second;
   ui.merge.textContent = second ? `Merge ${second}` : 'Merge';
+  const off = connector?.structureNote?.(sel.page, b.id) ?? null;
+  ui.split.title = off ? `${off}: it cannot be split here` : 'Split the box at the caret (or before the focused paragraph)';
+  ui.merge.title = off ? `${off}: it cannot be merged here` : 'Merge the shift-clicked box into this one';
+  const infos = boxNotes(sel.page, b.id).map((nt) => nt.info).filter(Boolean);
   ui.boxinfo.textContent = `${b.id} · ${b.kind}${b.vertical ? ' · vertical' : ''} · ${b.paragraphs.length} paragraph${b.paragraphs.length === 1 ? '' : 's'}` +
-    (b.edited ? ' · edited' : '') + (L.overflow ? ' · text overflows' : '') +
+    (b.edited ? ' · edited' : '') + (b.hand ? ' · adjusted by hand' : '') + (L.overflow ? ' · text overflows' : '') + infos.map((x) => ` · ${x}`).join('') +
     (views[sel.page]?.refused.get(b.id) ? ` · export refused: ${views[sel.page].refused.get(b.id)}` : '');
 }
 
@@ -840,7 +1055,7 @@ function updateStatus() {
 }
 
 function style(patch: StylePatch, merge = false) {
-  if (!editor || !sel) return;
+  if (!editor || !sel || readOnlyRefused()) return;
   try { editor.setStyle(sel.page, sel.id, scope === 'para' ? focusPara : null, patch, { merge }); } catch (err) { msg(String((err as Error).message)); }
 }
 const num = (el: HTMLInputElement) => { const x = Number(el.value); return el.value.trim() !== '' && Number.isFinite(x) ? x : null; };
@@ -883,10 +1098,11 @@ ui.align.addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
   if (b?.dataset.v) style({ align: b.dataset.v as 'left' });
 });
-ui.resetSpacing.addEventListener('click', () => { if (editor && sel) editor.resetCharSpacing(sel.page, sel.id); });
-ui.pin.addEventListener('change', () => { if (editor && sel) editor.setHeightPinned(sel.page, sel.id, ui.pin.checked); });
+ui.resetSpacing.addEventListener('click', () => { if (editor && sel && !readOnlyRefused()) editor.resetCharSpacing(sel.page, sel.id); });
+ui.pin.addEventListener('change', () => { if (editor && sel && !readOnlyRefused()) editor.setHeightPinned(sel.page, sel.id, ui.pin.checked); else updatePanel(); });
 function frameInput() {
   if (!editor || !sel) return;
+  if (readOnlyRefused()) { updatePanel(); return; }
   const b = findBox(sel.page, sel.id);
   const pg = pageOf(sel.page);
   if (!b || !pg) return;
@@ -905,6 +1121,8 @@ ui.split.addEventListener('click', () => {
   const b = findBox(sel.page, sel.id);
   if (!b) return;
   const at = input.pos?.para === focusPara ? input.pos.off : null;
+  const why = connector?.refuseStructure?.(sel.page, [sel.id], 'split');
+  if (why) { msg(why); return; }
   try {
     let id: string | null = null;
     if (at !== null && at > 0 && at < paraText(b, focusPara).length) id = editor.splitBox(sel.page, sel.id, focusPara, at);
@@ -916,6 +1134,8 @@ ui.split.addEventListener('click', () => {
 });
 ui.merge.addEventListener('click', () => {
   if (!editor || !sel || !second) return;
+  const why = connector?.refuseStructure?.(sel.page, [sel.id, second], 'merge');
+  if (why) { msg(why); return; }
   try { const s = second; editor.mergeBoxes(sel.page, sel.id, s); second = null; msg(`${s} merged into ${sel.id}.`); } catch (err) { msg(String((err as Error).message)); }
 });
 ui.undo.addEventListener('click', () => history?.undo());
@@ -927,13 +1147,15 @@ function clearText() {
   const b = findBox(sel.page, sel.id);
   if (!b) return;
   const { page, id } = sel;
+  const why = connector?.refuseStructure?.(page, [id], 'clear');
+  if (why) { msg(why); return; }
   input.breakMerge();
   history.group(() => b.paragraphs.forEach((_, i) => editor!.setText(page, id, i, '')));
   msg(`Text of ${id} cleared (Ctrl+Z brings it back).`);
 }
 
 function nudge(dx: number, dy: number) {
-  if (!editor || !sel) return;
+  if (!editor || !sel || readOnlyRefused()) return;
   const b = findBox(sel.page, sel.id);
   if (!b) return;
   const now = Date.now();
@@ -953,9 +1175,10 @@ const reportClick = (e: Event) => {
 ui.exportBody.addEventListener('click', reportClick);
 
 // ── export ──────────────────────────────────────────────────────────────────────────────────────────────────
-ui.export.addEventListener('click', () => {
+ui.export.addEventListener('click', async () => {
   if (!doc) return;
   if (editing) stopEditing();
+  if (connector?.beforeExport && !(await connector.beforeExport())) return;   // a connector may save first
   exportPending = ++exportSeq;
   exportedVersion = -1;
   const at = globalVersion;
@@ -969,7 +1192,7 @@ function onExported(m: Extract<Res, { kind: 'exported' }>) {
   if (m.id !== exportPending) return;
   exportPending = 0;
   ui.export.textContent = 'Export PDF';
-  ui.exportBody.replaceChildren(exportReportView(m.report, m.error));
+  ui.exportBody.replaceChildren(exportReportView(m.report, m.error, exportNotes));
   lastExport = { report: m.report, error: m.error, bytes: m.bytes?.byteLength ?? 0 };
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   downloadUrl = null;
@@ -987,7 +1210,10 @@ function onExported(m: Extract<Res, { kind: 'exported' }>) {
     msg(r?.ok ? `Exported: ${r.pages.reduce((k, p) => k + p.written.length, 0)} boxes written, verified.` : `Export finished with problems: ${r?.failures[0] ?? m.error}`);
   } else msg(`Export failed: ${m.report?.failures[0] ?? m.error ?? 'unknown error'}`);
   updateAll();
+  for (const t of tools) t.hooks.exported?.(m.report);
+  if (connector?.exported) void connector.exported(m.bytes, m.report, m.error);
 }
+const exportNotes = (p: PageReport) => tools.map((t) => t.hooks.exportNotes?.(p)).filter((x): x is { note?: string; problems?: string[] } => !!x);
 
 // ── zoom and scrolling ──────────────────────────────────────────────────────────────────────────────────────
 let zoomTimer = 0;
@@ -1107,6 +1333,73 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); clearText(); }
   else if (e.key === 'Enter') { e.preventDefault(); startEditing(); }
 });
+// keys the editor leaves alone go to the tools (outside text fields)
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented) return;
+  const t = e.target as HTMLElement;
+  if (t.closest('input, select, textarea')) return;
+  for (const tl of tools) if (tl.hooks.keydown?.(e)) { e.preventDefault(); return; }
+});
+
+// ── other versions of the document in the same views (ConnectorHost.swapDocument) ──────────────────────────
+type ViewRender = Pick<PageView, 'commit' | 'committed' | 'committedVersion' | 'version' | 'dirty' | 'structural' | 'refused' | 'failures'>;
+let docKey = '';
+let liveKeep: { doc: Doc; editor: Editor; history: History } | null = null;
+const keptRenders = new Map<string, ViewRender[]>();
+
+function stashViews(): ViewRender[] {
+  return views.map((v) => ({ commit: v.commit, committed: v.committed, committedVersion: v.committedVersion, version: v.version,
+    dirty: new Set(v.dirty), structural: v.structural, refused: new Map(v.refused), failures: [...v.failures] }));
+}
+
+/** Each page view takes a version's renders (kept from when it was last shown), or starts afresh: its edited boxes
+ *  are committed once the page is on screen. A commit still in flight for the version left is dropped (its id is not
+ *  the view's any more), and a kept render the worker let go is committed again (render-missing). */
+function restoreViews(saved: ViewRender[] | undefined) {
+  views.forEach((v, i) => {
+    clearTimeout(v.timer);
+    v.timer = 0;
+    v.inflight = null;
+    const s = saved?.[i];
+    if (s) {
+      Object.assign(v, { commit: s.commit, committed: s.committed, committedVersion: s.committedVersion, dirty: new Set(s.dirty), structural: s.structural,
+        refused: new Map(s.refused), failures: [...s.failures] });
+      v.version = s.version;
+    } else {
+      const edited = pageOf(v.n)?.boxes.filter((b) => b.edited) ?? [];
+      v.version += 1;
+      Object.assign(v, { commit: null, committed: null, committedVersion: edited.length ? -1 : v.version, dirty: new Set(edited.map((b) => b.id)),
+        structural: true, refused: new Map(), failures: [] });
+    }
+    v.overlay = null;
+    v.mode = null;
+    v.thumbSource = '';
+  });
+}
+
+/** Shows `pages` as version `key` (a document, editor and history of its own) or, with null, the live document again.
+ *  The page and the scroll position stay; each version keeps its renders. */
+function swapDocument(key: string, pages: Page[] | null) {
+  if (!doc || !editor || !history || !fonts) throw new Error('no document is open');
+  if (editing) stopEditing();
+  deselect();
+  keptRenders.set(docKey, stashViews());
+  if (!liveKeep) liveKeep = { doc, editor, history };
+  if (pages) {
+    doc = { pages: [...pages] };
+    editor = new Editor(doc, fonts);
+    history = new History(editor);
+    editor.onChange(onChange);
+    docKey = key;
+  } else {
+    ({ doc, editor, history } = liveKeep);
+    liveKeep = null;
+    docKey = '';
+  }
+  restoreViews(keptRenders.get(docKey));
+  for (const v of views) { buildFrames(v); paint(v); requestThumb(v); ensureRender(v); }
+  updateAll();
+}
 
 // ── the page's hooks for the headless check (scripts/app-smoke.ts) ──────────────────────────────────────────
 const debug = {
@@ -1114,6 +1407,8 @@ const debug = {
   get doc() { return doc; }, get editor() { return editor; }, get zoom() { return zoom; }, get selected() { return sel; },
   get editing() { return editing; }, get current() { return current; }, stats,
   get lastExport() { return lastExport; },
+  get connector() { return connector?.debug ?? null; },
+  get tools() { return Object.fromEntries(tools.map((t) => [t.id, t.hooks.debug ?? {}])); },
   get downloadName() { return ui.download.hidden ? null : ui.download.download; },
   pageState: (n: number) => (views[n] ? pageState(views[n]) : null),
   rendered: (n: number) => {
@@ -1131,6 +1426,23 @@ const debug = {
     return { pos, anchor, focus, rect: { x: r.left, y: r.top, w: r.width, h: r.height }, hidden: caretEl.hidden };
   },
   select: (n: number, id: string) => select(n, id),
+  /** Ends editing as leaving the box does. */
+  endEditing: () => { stopEditing(); connector?.editingEnded?.(); },
+  /** A typed edit through a connector's gates (false: refused). */
+  textEdit: (n: number, id: string, texts: string[]) => textEdit(n, id, texts),
+  /** An input as the text box would send it (a connector's gate first), applied as the textarea would apply it. */
+  input: (n: number, id: string, x: { type: string; data: string | null; start: number; end: number }) => {
+    const b = findBox(n, id);
+    if (!b) return 'no box';
+    const why = connector?.refuseInput?.(n, b, x) ?? null;
+    if (why) { msg(why); return why; }
+    const t = TextInput.textOf(b);
+    let a = Math.min(x.start, x.end), z = Math.max(x.start, x.end);
+    if (a === z && x.type === 'deleteContentBackward') a = Math.max(0, a - 1);
+    if (a === z && x.type === 'deleteContentForward') z = Math.min(t.length, z + 1);
+    const next = t.slice(0, a) + (x.data ?? '') + t.slice(z);
+    return textEdit(n, id, next.split('\n').map((p) => p.split('\u2028').join('\n'))) ? null : 'refused';
+  },
   /** Client-space rectangle of a page rectangle (for real mouse events). */
   clientRect: (n: number, r: Rect) => {
     const v = views[n];
@@ -1153,8 +1465,9 @@ const debug = {
     const v = views[n];
     if (!v?.orig || !v.commit || v.orig.img.width !== v.commit.img.width) return null;
     const a = v.orig.img, b = v.commit.img, k = a.width / v.w;
-    const X0 = Math.max(0, Math.floor(r.x0 * k)), X1 = Math.min(a.width, Math.ceil(r.x1 * k));
-    const Y0 = Math.max(0, Math.floor((v.h - r.y1) * k)), Y1 = Math.min(a.height, Math.ceil((v.h - r.y0) * k));
+    const q = rectToPixels(v.view, r, k, v.h);
+    const X0 = Math.max(0, Math.floor(q.x0)), X1 = Math.min(a.width, Math.ceil(q.x1));
+    const Y0 = Math.max(0, Math.floor(q.y0)), Y1 = Math.min(a.height, Math.ceil(q.y1));
     let diff = 0, total = 0;
     for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) {
       const o = (y * a.width + x) * 4;
@@ -1169,3 +1482,5 @@ const debug = {
 (window as unknown as { __app: typeof debug }).__app = debug;
 syncZoomUi();
 updateAll();
+if (connector) { connector.mount(); void connector.load(); }
+else if (loaded.error) msg(`The host connection is off: ${loaded.error}.`);

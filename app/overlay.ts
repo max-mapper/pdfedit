@@ -2,10 +2,11 @@
 // over their masked source, as web/preview.ts does, with one addition for the commit re-render: the page's base
 // bitmap is either PDFium's render of the original (then every edited box is drawn) or the
 // render of the page's committed export (then only the boxes changed since the commit, and boxes export refused,
-// are drawn; each one's mask also covers where the committed render drew it, `extra`).
+// are drawn; each one's mask also covers where the committed render drew it, `extra`). Drawing goes through the view's
+// matrix (web/preview.ts canvasMatrix), so text on a page turned by /Rotate is drawn where PDFium renders it.
 import type { Box, LaidBox, Page, Rect } from '../src/model/types.ts';
 import type { Face } from '../src/text/face.ts';
-import { drawnRect, maskRect, sampleBackground, type View } from '../web/preview.ts';
+import { canvasRect, dirtyPixels, drawnRect, glyphMatrix, maskRect, paintUnderlays, sampleBackground, type Underlay, type View } from '../web/preview.ts';
 
 export type OverlayMode = {
   /** Which boxes the overlay draws (edited boxes, and the selected one: the editor draws a box as soon as it has the
@@ -13,6 +14,8 @@ export type OverlayMode = {
   include(b: Box): boolean;
   /** More area to mask for a box: where the committed render drew it. */
   extra(id: string): Rect | undefined;
+  /** Painted under the boxes (web/preview.ts Underlay), when the base is the original render. */
+  underlays?: Underlay[];
 };
 
 const paths = new Map<number, Map<number, Path2D>>();
@@ -31,6 +34,8 @@ export class Overlay {
   private mode: OverlayMode;
   private drawn = new Map<string, Rect>();
   private colours = new Map<string, string>();
+  private underRects: Rect[] = [];
+  private source: OffscreenCanvas | null = null;
 
   constructor(canvas: HTMLCanvasElement, bitmap: ImageData, view: View, mode: OverlayMode) {
     this.ctx = canvas.getContext('2d')!;
@@ -59,6 +64,9 @@ export class Overlay {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, c.canvas.width, c.canvas.height);
     this.drawn.clear();
+    const under = this.mode.underlays ?? [];
+    this.underRects = under.flatMap((u) => u.rects(page));
+    this.paintUnder(page);
     const boxes = this.shown(page);
     const L = new Map(boxes.map((b) => [b.id, laid(b)]));
     for (const b of boxes) this.mask(b);
@@ -81,26 +89,37 @@ export class Overlay {
     for (const id of [...this.drawn.keys()]) if (!page.boxes.some((b) => b.id === id)) { dirty = union(dirty, this.drawn.get(id)!); this.drawn.delete(id); }
     if (!dirty) return;
     const d = dirty;
-    const c = this.ctx, { k, h } = this.view;
-    const px = { x: Math.floor(d.x0 * k) - 1, y: Math.floor((h - d.y1) * k) - 1 };
-    const pw = Math.ceil(d.x1 * k) + 1 - px.x, ph = Math.ceil((h - d.y0) * k) + 1 - px.y;
+    const c = this.ctx;
+    const px = dirtyPixels(this.view, d);
     c.save();
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.beginPath();
-    c.rect(px.x, px.y, pw, ph);
+    c.rect(px.x, px.y, px.w, px.h);
     c.clip();
-    c.clearRect(px.x, px.y, pw, ph);
+    c.clearRect(px.x, px.y, px.w, px.h);
+    if (this.underRects.some((r) => meets(r, d))) this.paintUnder(page);
     const hit = this.shown(page).filter((b) => this.drawn.has(b.id) && meets(this.drawn.get(b.id)!, d));
     for (const b of hit) this.mask(b);
     for (const b of hit) this.text(laid(b));
     c.restore();
   }
 
+  private paintUnder(page: Page): void {
+    paintUnderlays(this.ctx, page, this.mode.underlays ?? [], {
+      view: this.view,
+      source: () => {
+        if (!this.source) { this.source = new OffscreenCanvas(this.bitmap.width, this.bitmap.height); this.source.getContext('2d')!.putImageData(this.bitmap, 0, 0); }
+        return this.source;
+      },
+      colour: (key, r) => this.colour(key, r),
+    });
+  }
+
   /** Canvas pixels with any paint inside a page rectangle (the smoke check that committed boxes left the overlay). */
   paintedIn(r: Rect): number {
-    const { k, h } = this.view;
-    const x = Math.max(0, Math.floor(r.x0 * k)), y = Math.max(0, Math.floor((h - r.y1) * k));
-    const w = Math.max(1, Math.ceil((r.x1 - r.x0) * k)), hh = Math.max(1, Math.ceil((r.y1 - r.y0) * k));
+    const q = canvasRect(this.view, r);
+    const x = Math.max(0, Math.floor(q.x0)), y = Math.max(0, Math.floor(q.y0));
+    const w = Math.max(1, Math.ceil(q.x1 - q.x0)), hh = Math.max(1, Math.ceil(q.y1 - q.y0));
     const px = this.ctx.getImageData(x, y, w, hh).data;
     let n = 0;
     for (let i = 3; i < px.length; i += 4) if (px[i] > 0) n++;
@@ -114,30 +133,30 @@ export class Overlay {
   }
 
   private mask(b: Box): void {
-    const c = this.ctx, { k, h } = this.view;
+    const c = this.ctx;
     const r = this.maskOf(b);
+    const q = canvasRect(this.view, r);
     c.save();
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = this.colour(`${b.id}:${r.x0},${r.y0},${r.x1},${r.y1}`, r);
-    c.fillRect(r.x0 * k, (h - r.y1) * k, (r.x1 - r.x0) * k, (r.y1 - r.y0) * k);
+    c.fillRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
     c.restore();
   }
 
   private text(L: LaidBox): void {
-    const c = this.ctx, { k, h } = this.view;
+    const c = this.ctx;
     c.save();
     for (const line of L.lines) {
       for (const run of line.runs) {
         const face = run.face;
         if (!face) continue;
         c.fillStyle = `rgb(${run.color.map((v) => Math.round(v * 255)).join(', ')})`;
-        const s = (run.size / face.upem) * k;
-        // sideways glyphs (vertical text) are written under `0 -1 1 0 x y Tm`: on the canvas (y down) (0, s, s, 0)
+        const s = run.size / face.upem;
+        // sideways glyphs (vertical text) are written under `0 -1 1 0 x y Tm`
         const sideways = run.orientation === 'sideways' || face.orientation === 'sideways';
         for (const g of run.glyphs) {
-          const X = (line.x + g.x) * k, Y = (h - (line.baseline + g.y)) * k;
-          if (sideways) c.setTransform(0, s, s, 0, X, Y);
-          else c.setTransform(s, 0, 0, -s, X, Y);
+          const m = glyphMatrix(this.view, s, line.x + g.x, line.baseline + g.y, sideways);
+          c.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           c.fill(glyphPath(face, g.gid));
         }
       }

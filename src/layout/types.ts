@@ -1,5 +1,6 @@
 // Box detection: the input is what src/engine reads from a page; the output is the editor's boxes.
 // Units: PDF points, origin bottom-left, y up (the engine's space). A Rect is { x0, y0, x1, y1 } with y1 the top.
+import type { ViewBox } from '../engine/view.ts';
 import type { Char, TextObj, Shape, Rect } from '../engine/pdfium.ts';
 
 export type { Char, TextObj, Shape, Rect };
@@ -9,6 +10,7 @@ export type PageInput = {
   chars: Char[];            // page.chars(): content order, each with its text object index (`obj`)
   textObjects: TextObj[];   // page.textObjects()
   shapes: Shape[];          // page.shapes()
+  view?: ViewBox;           // page.view: rotation and crop box (absent: user space is the shown page)
 };
 
 export type Word = { chars: number[]; text: string; box: Rect };

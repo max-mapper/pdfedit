@@ -15,12 +15,18 @@ export type TextInputHost = {
   model(): { key: string; box: Box; laid: LaidBox } | null;
   /** A client point in PDF space on the box's page. */
   toPdf(clientX: number, clientY: number): { x: number; y: number } | null;
-  /** A PDF rectangle in the CSS pixels of the caret's and the selection's container (the edit box). */
+  /** A PDF rectangle in the CSS pixels of the caret's and the selection's container (the edit box), through the
+   *  page's view (a page turned by /Rotate shows it turned). */
   toCss(r: Rect, laid: LaidBox): { left: number; top: number; width: number; height: number };
   /** The new paragraph texts; `merge`: continue the undo step on top. */
   edit(texts: string[], merge: boolean): void;
   /** The paragraph the caret is in changed. */
   onPara?(para: number): void;
+  /** The caret was drawn at this place (every move and edit). */
+  onCaret?(pos: CaretPos): void;
+  /** Asked before an input changes the text: its type (InputEvent.inputType), the text it inserts and the selection
+   *  as textarea offsets. False refuses it (nothing changes; the host says why). A paste is asked with its text. */
+  guard?(input: { type: string; data: string | null; start: number; end: number }): boolean;
 };
 
 const PSEP = '\n', LSEP = '\u2028';
@@ -44,7 +50,14 @@ export class TextInput {
   constructor(host: TextInputHost) {
     this.h = host;
     const ta = host.ta;
-    ta.addEventListener('beforeinput', (e) => { if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') e.preventDefault(); });
+    ta.addEventListener('beforeinput', (e) => {
+      if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') { e.preventDefault(); return; }
+      if (this.h.guard && !this.h.guard({ type: e.inputType, data: e.data ?? e.dataTransfer?.getData('text/plain') ?? null, start: ta.selectionStart, end: ta.selectionEnd })) e.preventDefault();
+    });
+    ta.addEventListener('paste', (e) => {
+      const text = e.clipboardData?.getData('text/plain') ?? '';
+      if (this.h.guard && !this.h.guard({ type: 'insertFromPaste', data: text, start: ta.selectionStart, end: ta.selectionEnd })) e.preventDefault();
+    });
     ta.addEventListener('compositionstart', () => { this.composing = true; });
     ta.addEventListener('compositionend', () => { this.composing = false; this.draw(); });
     ta.addEventListener('input', () => this.onInput());
@@ -93,7 +106,7 @@ export class TextInput {
     this.draw();
   }
 
-  /** The textarea back in step with the model (after undo, redo or a style change), then the caret drawn. */
+  /** The textarea back in step with the model (after undo, redo, a page edit or a style change), then the caret drawn. */
   sync(): void {
     const m = this.editing ? this.h.model() : null;
     if (!m) { this.draw(); return; }
@@ -151,10 +164,13 @@ export class TextInput {
     const { anchor, focus } = this.sel();
     const fp = this.toPos(m.box, focus), ap = this.toPos(m.box, anchor);
     if (fp.para !== this.para) { this.para = fp.para; this.h.onPara?.(fp.para); }
+    this.h.onCaret?.(fp);
     const r = caretRect(lines, fp, this.aff);
     if (r) {
       const k = this.h.toCss(r, m.laid);
-      const vertical = r.y0 === r.y1;
+      // the bar lies across the line: upright for horizontal text, flat for vertical text, and turned with a page
+      // turned by /Rotate (toCss maps through the page's view), so its direction is read on the screen
+      const vertical = k.height < k.width;
       Object.assign(caret.style, { left: `${k.left - (vertical ? 0 : 0.75)}px`, top: `${k.top - (vertical ? 0.75 : 0)}px`,
         width: `${vertical ? k.width : 1.5}px`, height: `${vertical ? 1.5 : k.height}px` });
       caret.hidden = anchor !== focus;
@@ -233,6 +249,7 @@ export class TextInput {
 
   private insert(s: string): void {
     const ta = this.h.ta;
+    if (this.h.guard && !this.h.guard({ type: s === LSEP ? 'insertLineBreak' : 'insertText', data: s, start: ta.selectionStart, end: ta.selectionEnd })) return;
     ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, 'end');
     this.onInput();
   }

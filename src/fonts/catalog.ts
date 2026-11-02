@@ -14,7 +14,8 @@ export type FamilyId = string;
 export type Classification = 'sans' | 'serif' | 'mono' | 'rounded' | 'script' | 'display';
 /** ISO 15924: Latin, and Japanese (Han + kana). */
 export type Script = 'latn' | 'jpan';
-export type Licence = 'OFL-1.1' | 'Apache-2.0';
+/** SPDX ids. IPA: the IPA Font License Agreement v1.0 (OSI-approved). */
+export type Licence = 'OFL-1.1' | 'Apache-2.0' | 'IPA';
 export type Tier = 'core' | 'extended';
 
 /** Where a file comes from. `google` paths are relative to the google/fonts repository at GOOGLE_FONTS_COMMIT. */
@@ -58,7 +59,8 @@ export type Family = {
   classification: Classification;
   scripts: Script[];
   pitch: 'proportional' | 'fixed';
-  /** The proportional sibling of a fixed-pitch family (BIZ UDGothic → BIZ UDPGothic), used for Latin text. */
+  /** The proportional family a fixed-pitch one hands Latin text to: its sibling (BIZ UDGothic → BIZ UDPGothic), or
+   *  the nearest proportional family when it has none (IPAGothic → BIZ UDPGothic). */
   proportional?: FamilyId;
   licence: Licence;
   licenceSrc: Source;
@@ -75,6 +77,12 @@ export const GOOGLE_FONTS_COMMIT = '6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec';
 const SELAWIK_COMMIT = '89362e84731d1f5777fa078fd4d5ebbd339e4378';
 const TINOS_COMMIT = '3b4482a99b80ea5fc75f187b1be3120a3f5905b3';
 const MPLUS_COMMIT = 'eb604901d6f04b6f7f2a84b0378c58df84a9dba6';   // google/fonts ofl/mplusrounded1c carries no OFL.txt
+/** The IPA font release 003.03 (four faces and the licence in one archive, at a URL named for the release). */
+const IPA_ZIP = 'https://moji.or.jp/wp-content/ipafont/IPAfont/IPAfont00303.zip';
+const IPA_LICENCE: Source = { kind: 'zip', url: IPA_ZIP, member: 'IPAfont00303/IPA_Font_License_Agreement_v1.0.txt' };
+/** An IPA font file. The file keeps its upstream name: the licence lets the unmodified program be redistributed only
+ *  under its own name, with the licence text beside it (Art. 3.2). A subset written into a PDF carries no duty (Art. 2.5). */
+const ipa = (file: string, bytes: number): FontFileSpec => ({ file, src: { kind: 'zip', url: IPA_ZIP, member: `IPAfont00303/${file}` }, bytes, weight: 400, italic: false });
 
 /** The download URL of a source (for zip: the archive's URL). */
 export function sourceUrl(src: Source): string {
@@ -169,6 +177,24 @@ export const CATALOG: Family[] = [
     })),
     note: 'Open replacement for Segoe UI (metrically compatible; no kerning, no italic).',
   },
+  {
+    id: 'source-sans-3', name: 'Source Sans 3', classification: 'sans', scripts: ['latn'], pitch: 'proportional',
+    licence: 'OFL-1.1', licenceSrc: ofl('sourcesans3'), tier: 'core',
+    files: [
+      { file: 'SourceSans3-VF.ttf', src: g('ofl/sourcesans3/SourceSans3[wght].ttf'), bytes: 646340, weight: [200, 900], italic: false },
+      { file: 'SourceSans3-Italic-VF.ttf', src: g('ofl/sourcesans3/SourceSans3-Italic[wght].ttf'), bytes: 395372, weight: [200, 900], italic: true },
+    ],
+    note: 'Humanist sans: Myriad / Frutiger-like, and the Latin of Noto Sans JP.',
+  },
+  {
+    id: 'source-serif-4', name: 'Source Serif 4', classification: 'serif', scripts: ['latn'], pitch: 'proportional',
+    licence: 'OFL-1.1', licenceSrc: ofl('sourceserif4'), tier: 'core',
+    files: [
+      { file: 'SourceSerif4-VF.ttf', src: g('ofl/sourceserif4/SourceSerif4[opsz,wght].ttf'), bytes: 1209508, weight: [200, 900], italic: false },
+      { file: 'SourceSerif4-Italic-VF.ttf', src: g('ofl/sourceserif4/SourceSerif4-Italic[opsz,wght].ttf'), bytes: 855432, weight: [200, 900], italic: true },
+    ],
+    note: 'Text serif: Minion-like, and the Latin of Noto Serif JP.',
+  },
   // ------------------------------------------------------------------------------------------------- Japanese core
   {
     id: 'noto-sans-jp', name: 'Noto Sans JP', classification: 'sans', scripts: ['jpan', 'latn'], pitch: 'proportional',
@@ -204,25 +230,20 @@ export const CATALOG: Family[] = [
     licence: 'OFL-1.1', licenceSrc: ofl('bizudpmincho'), tier: 'core',
     files: statics('bizudpmincho', 'BIZUDPMincho', [['Regular', 400, false, 6156444], ['Bold', 700, false, 7109432]]),
   },
+  {
+    id: 'ipa-gothic', name: 'IPAGothic', classification: 'sans', scripts: ['jpan', 'latn'], pitch: 'fixed', proportional: 'biz-udpgothic',
+    licence: 'IPA', licenceSrc: IPA_LICENCE, tier: 'core', metricCompatible: ['MS Gothic'],
+    files: [ipa('ipag.ttf', 6235344)],
+    note: 'Half-width Latin and kana, full-width kanji, kana and punctuation: the advance widths of MS Gothic. One weight. '
+      + 'IPA licence: serve the file unmodified, under its own name, with the licence text.',
+  },
+  {
+    id: 'ipa-mincho', name: 'IPAMincho', classification: 'serif', scripts: ['jpan', 'latn'], pitch: 'fixed', proportional: 'biz-udpmincho',
+    licence: 'IPA', licenceSrc: IPA_LICENCE, tier: 'core',
+    files: [ipa('ipam.ttf', 8046712)],
+    note: 'The same widths as IPAGothic, in a mincho design, for MS Mincho. One weight. IPA licence as for IPAGothic.',
+  },
   // ------------------------------------------------------------------------------------------------ Latin extended
-  {
-    id: 'source-sans-3', name: 'Source Sans 3', classification: 'sans', scripts: ['latn'], pitch: 'proportional',
-    licence: 'OFL-1.1', licenceSrc: ofl('sourcesans3'), tier: 'extended',
-    files: [
-      { file: 'SourceSans3-VF.ttf', src: g('ofl/sourcesans3/SourceSans3[wght].ttf'), bytes: 646340, weight: [200, 900], italic: false },
-      { file: 'SourceSans3-Italic-VF.ttf', src: g('ofl/sourcesans3/SourceSans3-Italic[wght].ttf'), bytes: 395372, weight: [200, 900], italic: true },
-    ],
-    note: 'Humanist sans: Myriad / Frutiger-like, and the Latin of Noto Sans JP.',
-  },
-  {
-    id: 'source-serif-4', name: 'Source Serif 4', classification: 'serif', scripts: ['latn'], pitch: 'proportional',
-    licence: 'OFL-1.1', licenceSrc: ofl('sourceserif4'), tier: 'extended',
-    files: [
-      { file: 'SourceSerif4-VF.ttf', src: g('ofl/sourceserif4/SourceSerif4[opsz,wght].ttf'), bytes: 1209508, weight: [200, 900], italic: false },
-      { file: 'SourceSerif4-Italic-VF.ttf', src: g('ofl/sourceserif4/SourceSerif4-Italic[opsz,wght].ttf'), bytes: 855432, weight: [200, 900], italic: true },
-    ],
-    note: 'Text serif: Minion-like, and the Latin of Noto Serif JP.',
-  },
   {
     id: 'open-sans', name: 'Open Sans', classification: 'sans', scripts: ['latn'], pitch: 'proportional',
     licence: 'OFL-1.1', licenceSrc: ofl('opensans'), tier: 'extended',
@@ -369,6 +390,8 @@ const SHA256: Record<string, string> = {
   'IBMPlexSansJP-Regular.ttf': '372f8bba95f386856ae435dc0e69f08db1cac29bed513d99171a0ae2d307ba2a',
   'IBMPlexSansJP-SemiBold.ttf': '5985c29d2d5d444072915cf5874dc80e0a3f5fadbf14a9e3013a03a8fe6d7ff5',
   'IBMPlexSansJP-Thin.ttf': '773042bf5e8f428d46fcf81b9255c6a451f20cbd39983f308e96808a2e15e134',
+  'ipag.ttf': '503af4a8b84d1079b8e2e358dc7f7a7fb8cb7a1f212f35eaef6782dbfc75a55e',
+  'ipam.ttf': 'ab923870b9ea047179c14fa78eede8d3957b6bfed26577253b5f08f75c102a34',
   'Inconsolata-VF.ttf': '23ded25b447074d00659392bf9b1123d89df55cb07b0ad9bfef3366d199b5fcb',
   'Jost-Italic-VF.ttf': '15a6f7e3e11f9e8e338a583a6fe03e8f6b1d9ce877efa3fe579282b6c1cb15fe',
   'Jost-VF.ttf': '6343b70971000b04c5d401c96ae08ce371086135e999d5e1e1413039c0213076',
@@ -464,6 +487,10 @@ const MEASURED: Record<FamilyId, FamilyMetrics> = {
     widths: [500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] },
   'biz-udpmincho': { xHeight: 540, capHeight: 760, ascent: 880, descent: -120, boldRatio: 1.117,
     widths: [620, 640, 580, 630, 630, 460, 660, 670, 330, 400, 650, 330, 920, 660, 620, 650, 640, 460, 540, 420, 640, 610, 860, 660, 640, 550, 840, 740, 810, 800, 720, 660, 840, 800, 380, 500, 790, 630, 960, 840, 840, 700, 860, 750, 700, 700, 820, 760, 980, 800, 760, 720, 680, 520, 680, 680, 680, 680, 680, 680, 680, 680] },
+  'ipa-gothic': { xHeight: 526, capHeight: 751, ascent: 880, descent: -120,
+    widths: [500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] },
+  'ipa-mincho': { xHeight: 524, capHeight: 750, ascent: 880, descent: -120,
+    widths: [500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] },
   'source-sans-3': { xHeight: 486, capHeight: 656, ascent: 1024, descent: -400, boldRatio: 1.07,
     widths: [504, 553, 456, 555, 496, 292, 504, 544, 246, 247, 495, 255, 829, 547, 542, 555, 555, 347, 419, 338, 544, 467, 719, 446, 467, 425, 543, 588, 571, 615, 527, 494, 617, 652, 263, 479, 579, 486, 727, 647, 664, 566, 664, 569, 534, 536, 645, 515, 786, 513, 476, 539, 497, 497, 497, 497, 497, 497, 497, 497, 497, 497] },
   'source-serif-4': { xHeight: 475, capHeight: 670, ascent: 1036, descent: -335, boldRatio: 1.045,

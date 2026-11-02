@@ -1,5 +1,5 @@
 // The export report, rendered as DOM (no innerHTML with model text: box text and reasons are set as text).
-import type { ExportReport } from '../src/export/export.ts';
+import type { ExportReport, PageReport } from '../src/export/export.ts';
 
 type Child = Node | string | null | undefined | false;
 export function h(tag: string, attrs: Record<string, string> = {}, ...kids: Child[]): HTMLElement {
@@ -15,7 +15,10 @@ export function h(tag: string, attrs: Record<string, string> = {}, ...kids: Chil
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The export report: what was written, what was skipped and why, and the verification. */
-export function exportReportView(report: ExportReport | null, error: string | null): HTMLElement {
+/** Lines a tool adds to a page's section: a note in its summary sentence, and problems after it. */
+export type PageNotes = (p: PageReport) => { note?: string; problems?: string[] }[];
+
+export function exportReportView(report: ExportReport | null, error: string | null, notes: PageNotes = () => []): HTMLElement {
   const root = h('div', { class: 'report' });
   if (!report) { root.append(h('p', { class: 'banner bad' }, `Export failed: ${error ?? 'unknown error'}`)); return root; }
   const written = report.pages.reduce((n, p) => n + p.written.length, 0);
@@ -41,8 +44,10 @@ export function exportReportView(report: ExportReport | null, error: string | nu
   for (const p of report.pages) {
     const sec = h('div', { class: 'rep-page' }, h('h4', {}, `Page ${p.page + 1}`));
     const v = p.verify;
+    const extra = notes(p);
     sec.append(h('p', {}, `${plural(p.written.length, 'box', 'boxes')} written, ${p.skipped.length} skipped, ` +
-      `${plural(p.operatorsBlanked, 'operator')} blanked` + (p.operatorsSplit ? `, ${p.operatorsSplit} split` : '') + '.'));
+      `${plural(p.operatorsBlanked, 'operator')} blanked` + (p.operatorsSplit ? `, ${p.operatorsSplit} split` : '') +
+      extra.map((x) => (x.note ? `, ${x.note}` : '')).join('') + '.'));
     if (v) {
       const okText = v.text.filter((t) => t.newPresent).length;
       const oldGone = v.text.filter((t) => t.oldAbsent === true).length;
@@ -62,6 +67,7 @@ export function exportReportView(report: ExportReport | null, error: string | nu
       for (const s of sk) ul.append(h('li', {}, h('button', { class: 'link bad', 'data-page': String(s.page), 'data-box': s.box }, s.box), ` skipped: ${s.reason}`));
       sec.append(h('p', {}, 'Skipped:'), ul);
     }
+    for (const x of extra) for (const t of x.problems ?? []) sec.append(h('p', { class: 'bad-text' }, t));
     root.append(sec);
   }
   return root;

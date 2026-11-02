@@ -12,7 +12,9 @@ import type { FontRegistry } from '../src/model/fonts.ts';
 import { Editor } from '../src/model/edit.ts';
 import type { Change, StylePatch } from '../src/model/edit.ts';
 import type { Box, Doc, LaidBox, Page, Rect } from '../src/model/types.ts';
-import { Preview } from './preview.ts';
+import { Preview, viewOf, type Underlay } from './preview.ts';
+import { dragInUser, fromView, rectToView } from '../src/engine/view.ts';
+import type { WebTool, WebToolHooks } from './toolhost.ts';
 import { TextInput } from './textinput.ts';
 import type { WorkerReq, WorkerRes } from './worker.ts';
 
@@ -53,6 +55,7 @@ const send = (m: WorkerReq, t: Transferable[] = []) => worker.postMessage(m, t);
 let fonts: FontRegistry | null = null;
 let doc: Doc | null = null;
 let editor: Editor | null = null;
+const webTools: WebToolHooks[] = [];   // optional tools (web/tools/*.ts), loaded at the end of this module
 let n = 0;
 let pageCount = 0;
 let preview: Preview | null = null;
@@ -79,8 +82,8 @@ const pg = (): Page => doc!.pages[n];
 const laidOf = (b: Box) => editor!.cache!.get(n, b);
 const shownFrame = (b: Box): Rect => (b.edited ? laidOf(b).frame : b.frame);
 function cssRect(r: Rect) {
-  const h = pg().h;
-  return { left: r.x0 * Z, top: (h - r.y1) * Z, width: (r.x1 - r.x0) * Z, height: (r.y1 - r.y0) * Z };
+  const p = pg(), q = rectToView(p.view, r);
+  return { left: q.x0 * Z, top: (p.h - q.y1) * Z, width: (q.x1 - q.x0) * Z, height: (q.y1 - q.y0) * Z };
 }
 const place = (el: HTMLElement, r: Rect) => {
   const c = cssRect(r);
@@ -133,7 +136,8 @@ function showPage(image: ImageData) {
     c.style.width = `${p.w * Z}px`; c.style.height = `${p.h * Z}px`;
   }
   view.getContext('2d')!.putImageData(image, 0, 0);
-  preview = new Preview(previewCanvas, image, { k: image.width / p.w, h: p.h });
+  preview = new Preview(previewCanvas, image, viewOf(p, image.width / p.w));
+  preview.underlays = webTools.map((t) => t.underlay?.(p)).filter((u): u is Underlay => !!u);
   preview.drawAll(p, laidOf);
   deselect();
   renderFrames();
@@ -143,6 +147,7 @@ function showPage(image: ImageData) {
 function renderFrames() {
   framesEl.replaceChildren();
   frameDivs.clear();
+  for (const t of webTools) t.frames?.(pg(), (el, r) => { place(el, r); framesEl.append(el); });
   for (const b of pg().boxes) {
     const d = document.createElement('div');
     d.className = 'frame';
@@ -199,9 +204,13 @@ const input = new TextInput({
   toPdf: (clientX, clientY) => {
     if (!doc) return null;
     const r = framesEl.getBoundingClientRect();
-    return { x: (clientX - r.left) / Z, y: pg().h - (clientY - r.top) / Z };
+    const [x, y] = fromView(pg().view, (clientX - r.left) / Z, pg().h - (clientY - r.top) / Z);
+    return { x, y };
   },
-  toCss: (r, L) => ({ left: (r.x0 - L.frame.x0) * Z, top: (L.frame.y1 - r.y1) * Z, width: (r.x1 - r.x0) * Z, height: (r.y1 - r.y0) * Z }),
+  toCss: (r, L) => {
+    const v = pg().view, q = rectToView(v, r), f = rectToView(v, L.frame);
+    return { left: (q.x0 - f.x0) * Z, top: (f.y1 - q.y1) * Z, width: (q.x1 - q.x0) * Z, height: (q.y1 - q.y0) * Z };
+  },
   edit: (texts, merge) => {
     if (!editor || !selected) return;
     const t0 = performance.now();
@@ -269,8 +278,11 @@ function placeEditbox() {
 function onChange(c: Change) {
   if (c.page !== n || !preview) return;
   const p = pg();
-  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge';
-  preview.redraw(p, c.boxes, laidOf);
+  const structural = c.edit.kind === 'split' || c.edit.kind === 'merge' || c.edit.kind === 'page';
+  // a page edit (done, undone or redone) may change every box and what the underlays paint: everything is drawn again
+  if (c.edit.kind === 'page') preview.drawAll(p, laidOf);
+  else preview.redraw(p, c.boxes, laidOf);
+  for (const t of webTools) t.changed?.(c);
   stats.redraws++;
   if (structural) renderFrames();
   else for (const id of c.boxes) { const b = p.boxes.find((x) => x.id === id); if (b) updateFrame(b); }
@@ -360,7 +372,8 @@ document.addEventListener('keydown', (e) => {
 // ── move and resize ──────────────────────────────────────────────────────────────────────────────────────
 // Horizontal boxes: e / w set the width (a reflow), s sets the height and pins it. Vertical boxes (columns from the
 // right edge): s sets the column length (the frame's height, never pinned by it), w sets the column stack's width and
-// pins it (text wider than that is an overflow), e moves the right edge the columns hang from.
+// pins it (text wider than that is an overflow), e moves the right edge the columns hang from. On a page turned by
+// /Rotate a handle acts on the user-space edge it sits on as shown (src/engine/view.ts dragInUser).
 let drag: { h: string; x: number; y: number; frame: Rect; shown: Rect; pinned: boolean; first: boolean; id: string; vertical: boolean } | null = null;
 editbox.addEventListener('pointerdown', (e) => {
   const h = (e.target as HTMLElement).dataset?.h;
@@ -375,22 +388,26 @@ editbox.addEventListener('pointerdown', (e) => {
 editbox.addEventListener('pointermove', (e) => {
   if (input.pointerMove(e)) return;
   if (!drag || !editor) return;
-  const dx = (e.clientX - drag.x) / Z, dy = (e.clientY - drag.y) / Z;   // points; dy down
+  // points, dy down, on the user-space edges the handle is on (a page turned by /Rotate shows them turned)
+  const { h: dh, dx, dy } = dragInUser(pg().view, drag.h, e.clientX - drag.x, e.clientY - drag.y, Z);
   const f = drag.frame, s = drag.shown;
   let r: Rect = { ...f };
   let pin = drag.pinned;
+  const move = dh === 'move', on = (edge: string) => !move && dh.includes(edge);
   if (drag.vertical) {
     // the frame as shown (its width follows the stack unless pinned)
     r = { ...s, y0: f.y0, y1: f.y1 };
-    if (drag.h === 'move') r = { x0: s.x0 + dx, x1: s.x1 + dx, y0: f.y0 - dy, y1: f.y1 - dy };
-    if (drag.h === 'e' || drag.h === 'se') { r.x1 = Math.max(s.x0 + 4, s.x1 + dx); if (!pin) r.x0 = r.x1 - (s.x1 - s.x0); }
-    if (drag.h === 'w') { r.x0 = Math.min(s.x1 - 4, s.x0 + dx); pin = true; }
-    if (drag.h === 's' || drag.h === 'se') r.y0 = Math.min(f.y1 - 4, f.y0 - dy);
+    if (move) r = { x0: s.x0 + dx, x1: s.x1 + dx, y0: f.y0 - dy, y1: f.y1 - dy };
+    if (on('e')) { r.x1 = Math.max(s.x0 + 4, s.x1 + dx); if (!pin) r.x0 = r.x1 - (s.x1 - s.x0); }
+    if (on('w')) { r.x0 = Math.min(s.x1 - 4, s.x0 + dx); pin = true; }
+    if (on('s')) r.y0 = Math.min(f.y1 - 4, f.y0 - dy);
+    if (on('n')) r.y1 = Math.max(f.y0 + 4, f.y1 - dy);
   } else {
-    if (drag.h === 'move') r = { x0: f.x0 + dx, x1: f.x1 + dx, y0: f.y0 - dy, y1: f.y1 - dy };
-    if (drag.h === 'e' || drag.h === 'se') r.x1 = Math.max(f.x0 + 4, f.x1 + dx);
-    if (drag.h === 'w') r.x0 = Math.min(f.x1 - 4, f.x0 + dx);
-    if (drag.h === 's' || drag.h === 'se') { r.y0 = Math.min(s.y1 - 4, s.y0 - dy); pin = true; }
+    if (move) r = { x0: f.x0 + dx, x1: f.x1 + dx, y0: f.y0 - dy, y1: f.y1 - dy };
+    if (on('e')) r.x1 = Math.max(f.x0 + 4, f.x1 + dx);
+    if (on('w')) r.x0 = Math.min(f.x1 - 4, f.x0 + dx);
+    if (on('s')) { r.y0 = Math.min(s.y1 - 4, s.y0 - dy); pin = true; }
+    if (on('n')) { r.y1 = Math.max(s.y0 + 4, f.y1 - dy); if (!on('s')) r.y0 = s.y0; pin = true; }
   }
   editor.setFrame(n, drag.id, r, { merge: !drag.first, pinHeight: pin });
   drag.first = false;
@@ -412,3 +429,9 @@ pageInput.onchange = () => {
   deselect();
   requestPage(i);
 };
+
+// ── optional tools (web/tools/*.ts): each adds its own controls to the toolbar ─────────────────────────────────
+for (const m of Object.values(import.meta.glob<{ default: WebTool }>(['./tools/*.ts', '!./tools/*.worker.ts'], { eager: true }))) {
+  const hooks = m.default({ editor: () => editor, page: () => (doc ? pg() : null), pageNo: () => n, log: (t) => { log.textContent = t; }, group: ui.split.parentElement! });
+  if (hooks) webTools.push(hooks);
+}

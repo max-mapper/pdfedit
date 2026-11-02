@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CATALOG, FAMILIES, catalogFiles, sourceUrl } from './catalog.ts';
+import { CATALOG, FAMILIES, catalogFiles, sourceUrl, type Tier } from './catalog.ts';
 import {
   ALIASES, decodeFontName, describeSource, nearestWeight, panoseFromStyle, parseFontName, readSfntInfo, suggestSubstitutes,
   weightFromStemV, type SourceFontInfo,
@@ -111,16 +111,69 @@ test('Meiryo-Bold → Noto Sans JP 700', () => {
   }
 });
 
-test('MS-Mincho → BIZ UDMincho for Japanese (fixed pitch kept), BIZ UDPMincho for Latin text', () => {
+test('MS Gothic and MS Mincho → IPAGothic and IPAMincho for Japanese text; the proportional BIZ UD faces for Latin text', () => {
+  const g = top({ name: 'MS-Gothic', script: 'jpan' });
+  assert.equal(g.family, 'ipa-gothic');
+  assert.equal(g.file, 'ipag.ttf');
+  assert.equal(g.match, 'metric');
+  assert.ok(g.reasons.includes('metric-compatible with MS Gothic'));
+  assert.equal(top({ name: '#82l#82r#20#83S#83V#83b#83N', script: 'jpan' }).family, 'ipa-gothic');   // ＭＳ ゴシック
+  assert.equal(top({ name: 'ABCDEF+MSGothic', script: 'jpan' }).family, 'ipa-gothic');
   const j = top({ name: 'MS-Mincho', script: 'jpan' });
-  assert.equal(j.family, 'biz-udmincho');
+  assert.equal(j.family, 'ipa-mincho');
+  assert.equal(j.file, 'ipam.ttf');
   assert.equal(j.weight, 400);
+  assert.equal(j.match, 'alias', 'no MS Mincho width table was measured, so the document widths still count');
+  // Latin text set from the fixed-pitch faces reads better proportional (as before)
   const l = top({ name: 'MS-Mincho', script: 'latn' });
   assert.equal(l.family, 'biz-udpmincho');
   assert.equal(FAMILIES.get(l.family)!.classification, 'serif');
+  assert.equal(top({ name: 'MS-Gothic', script: 'latn' }).family, 'biz-udpgothic');
+  // the proportional and UI faces keep BIZ UDPGothic / UDPMincho (IPAGothic's widths are MS Gothic's, not MS PGothic's)
   assert.equal(top({ name: 'MS-PGothic', script: 'jpan' }).family, 'biz-udpgothic');
+  assert.equal(top({ name: 'MS-UIGothic', script: 'jpan' }).family, 'biz-udpgothic');
+  assert.equal(top({ name: 'MS-PMincho', script: 'jpan' }).family, 'biz-udpmincho');
+});
+
+test('MS Gothic and MS Mincho fall back on BIZ UD: for bold (IPA has one weight) and when the IPA files are not served', () => {
   assert.equal(top({ name: 'MS-Gothic,Bold', script: 'jpan' }).file, 'BIZUDGothic-Bold.ttf');
-  assert.equal(top({ name: '#82l#82r#20#83S#83V#83b#83N', script: 'jpan' }).family, 'biz-udgothic');
+  assert.equal(top({ name: 'MS-Mincho,Bold', script: 'jpan' }).file, 'BIZUDMincho-Bold.ttf');
+  const noIpa = (file: string) => !/^ipa[gm]\.ttf$/.test(file);
+  const g = top({ name: 'MS-Gothic', script: 'jpan' }, { available: noIpa });
+  assert.equal(g.family, 'biz-udgothic');
+  assert.equal(g.match, 'alias');
+  assert.equal(top({ name: 'MS-Mincho', script: 'jpan' }, { available: noIpa }).family, 'biz-udmincho');
+  // the IPA faces are in the core tier, so a core-only host still picks them
+  assert.equal(top({ name: 'MS-Gothic', script: 'jpan' }, { tiers: ['core'] }).family, 'ipa-gothic');
+});
+
+test('IPA document fonts map to themselves; IPAex and the proportional IPA faces do not', () => {
+  assert.equal(top({ name: 'IPAGothic', script: 'jpan' }).family, 'ipa-gothic');
+  assert.equal(top({ name: 'TakaoGothic', script: 'jpan' }).family, 'ipa-gothic');
+  assert.equal(top({ name: 'IPAMincho', script: 'jpan' }).family, 'ipa-mincho');
+  assert.equal(top({ name: 'IPAexGothic', script: 'jpan' }).family, 'noto-sans-jp');
+  assert.equal(top({ name: 'IPAPGothic', script: 'jpan' }).family, 'biz-udpgothic');
+  assert.equal(top({ name: 'IPAexMincho', script: 'jpan' }).family, 'noto-serif-jp');
+});
+
+test('Myriad → Source Sans 3 and Minion → Source Serif 4, from the core tier', () => {
+  for (const tiers of [undefined, ['core'] as Tier[]]) {
+    const m = top({ name: 'ABCDEF+MyriadPro-Regular' }, { tiers });
+    assert.equal(m.family, 'source-sans-3');
+    assert.equal(m.file, 'SourceSans3-VF.ttf');
+    assert.deepEqual(m.variations, { wght: 400 });
+    assert.equal(top({ name: 'MyriadPro-Bold' }, { tiers }).weight, 700);
+    assert.equal(top({ name: 'MyriadPro-It' }, { tiers }).file, 'SourceSans3-Italic-VF.ttf');
+    const n = top({ name: 'MinionPro-Regular' }, { tiers });
+    assert.equal(n.family, 'source-serif-4');
+    assert.equal(n.match, 'alias');
+    assert.equal(top({ name: 'MinionPro-It' }, { tiers }).file, 'SourceSerif4-Italic-VF.ttf');
+    assert.equal(top({ name: 'MinionPro-Semibold' }, { tiers }).weight, 600);
+  }
+  // the next choices remain when the Source files are not served
+  const noSource = (file: string) => !file.startsWith('Source');
+  assert.equal(top({ name: 'MyriadPro-Regular' }, { available: noSource }).family, 'noto-sans');
+  assert.equal(top({ name: 'MinionPro-Regular' }, { available: noSource }).family, 'noto-serif');
 });
 
 test('Shin Go, Hiragino, Yu and HG names map to the right class and weight', () => {
@@ -231,7 +284,7 @@ test('the catalog: every alias names catalog families; files are unique TrueType
   assert.equal(new Set(files).size, files.length);
   for (const f of files) assert.match(f, /\.ttf$/);
   for (const f of CATALOG) {
-    assert.ok(['OFL-1.1', 'Apache-2.0'].includes(f.licence));
+    assert.ok(['OFL-1.1', 'Apache-2.0', 'IPA'].includes(f.licence));
     assert.ok(f.scripts.includes('latn'));
     assert.ok(f.files.some((x) => !x.italic), `${f.id} has an upright face`);
     if (f.proportional) assert.equal(FAMILIES.get(f.proportional)?.pitch, 'proportional');
@@ -239,6 +292,37 @@ test('the catalog: every alias names catalog families; files are unique TrueType
   }
   assert.match(sourceUrl({ kind: 'google', path: 'ofl/arimo/Arimo[wght].ttf' }), /Arimo%5Bwght%5D\.ttf$/);
 });
+
+test('IPA fonts: pinned to the 003.03 release, served under their upstream names, with the licence text', () => {
+  const ipa = CATALOG.filter((f) => f.licence === 'IPA');
+  assert.deepEqual(ipa.map((f) => f.id).sort(), ['ipa-gothic', 'ipa-mincho']);
+  for (const f of ipa) {
+    assert.equal(f.tier, 'core');
+    assert.equal(f.licenceSrc.kind, 'zip');
+    if (f.licenceSrc.kind === 'zip') assert.match(f.licenceSrc.member, /IPA_Font_License_Agreement_v1\.0\.txt$/);
+    for (const x of f.files) {
+      assert.match(sourceUrl(x.src), /\/IPAfont00303\.zip$/);
+      // the licence lets the unmodified program be redistributed only under its own name
+      assert.equal(x.src.kind === 'zip' ? x.src.member : '', `IPAfont00303/${x.file}`);
+      assert.match(x.sha256 ?? '', /^[0-9a-f]{64}$/);
+    }
+  }
+  assert.deepEqual(FAMILIES.get('ipa-gothic')!.metricCompatible, ['MS Gothic']);
+});
+
+test('the IPA files on disk have MS Gothic\'s width scheme: half-width ASCII and kana, full-width kanji, kana and punctuation',
+  { skip: !onDisk('ipag.ttf') || !onDisk('ipam.ttf') }, async () => {
+    const { loadHarfBuzz } = await import('../text/hb.ts');
+    const { loadFace } = await import('../text/face.ts');
+    await loadHarfBuzz();
+    for (const file of ['ipag.ttf', 'ipam.ttf']) {
+      const face = loadFace(new Uint8Array(readFileSync(new URL(file, FONTS))));
+      const w = (ch: string) => (face.advance(face.glyph(ch.codePointAt(0)!)!) * 1000) / face.upem;
+      for (let c = 0x20; c < 0x7f; c++) assert.equal(w(String.fromCharCode(c)), 500, `${file} U+${c.toString(16)}`);
+      for (const ch of 'ｱｶﾞｰ') assert.equal(w(ch), 500, `${file} ${ch}`);
+      for (const ch of 'あア漢字、。「」・ーＡ１（') assert.equal(w(ch), 1000, `${file} ${ch}`);
+    }
+  });
 
 test('fetched files match their pinned sums and read as TrueType', { skip: !onDisk('Arimo-VF.ttf') }, async () => {
   const { createHash } = await import('node:crypto');

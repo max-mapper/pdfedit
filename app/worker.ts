@@ -13,8 +13,12 @@ import { LayoutCache } from '../src/model/layout.ts';
 import type { FontRegistry } from '../src/model/fonts.ts';
 import type { Doc, Page } from '../src/model/types.ts';
 import { ExportError, exportDoc, type ExportOptions, type ExportReport } from '../src/export/export.ts';
+import '../src/export/objects.ts';   // export writes the pages' object edits (Page.objectOps)
 import { loadAppFonts } from './assets.ts';
 import type { CommitResult, Req, Res } from './protocol.ts';
+import { loadOps, type OpContext } from './opshost.ts';
+import { openForEdit, type PdfEdit } from '../src/pdf/edit.ts';
+import type { ViewBox } from '../src/engine/view.ts';
 
 const P = fetch(wasmUrl).then((r) => r.arrayBuffer()).then((wasmBinary) => openPdfium({ wasmBinary }));
 let fontsP: Promise<FontRegistry> | null = null;
@@ -22,6 +26,10 @@ const fonts = () => (fontsP ??= loadAppFonts());
 
 let original: Uint8Array | null = null;
 let doc: PdfDoc | null = null;
+let editP: Promise<PdfEdit> | null = null;
+// worker ops (app/ops/*.ts): the modules load with the worker, so their page builders and export writers apply to
+// every page this worker builds and every export it runs
+const ops = loadOps();
 /** Committed exports per page, most recent last; a few are kept (each holds a copy of the file in PDFium's heap). */
 const committed = new Map<number, { id: number; doc: PdfDoc }>();
 const KEEP_COMMITTED = 4;
@@ -40,6 +48,7 @@ function exportOptions(F: FontRegistry, pdfium: Awaited<typeof P>): ExportOption
 function closeAll() {
   doc?.close();
   doc = null;
+  editP = null;
   for (const c of committed.values()) c.doc.close();
   committed.clear();
   latestCommit.clear();
@@ -77,6 +86,7 @@ async function commit(m: Extract<Req, { kind: 'commit' }>): Promise<void> {
   base.written = pr?.written.map((w) => w.box) ?? [];
   base.skipped = pr?.skipped ?? [];
   base.failures = report.failures;
+  if (pr?.objectsSkipped?.length) base.objectsSkipped = pr.objectsSkipped.map((x) => ({ id: x.id, reason: x.reason }));
   if (bytes) {
     const d = pdfium.open(bytes);
     const pg = d.page(m.n);
@@ -124,8 +134,9 @@ self.onmessage = async (e: MessageEvent<Req>) => {
       original = new Uint8Array(m.bytes);
       doc = pdfium.open(original);
       const sizes: { w: number; h: number }[] = [];
-      for (let i = 0; i < doc.pageCount; i++) { const pg = doc.page(i); sizes.push({ ...pg.size }); pg.close(); }
-      post({ kind: 'opened', sizes, ms: Math.round(performance.now() - t0) });
+      const views: ViewBox[] = [];
+      for (let i = 0; i < doc.pageCount; i++) { const pg = doc.page(i); sizes.push({ ...pg.size }); views.push(pg.view); pg.close(); }
+      post({ kind: 'opened', sizes, views, ms: Math.round(performance.now() - t0) });
       fonts().catch(() => {});   // warm the worker's fonts for the first commit
     } else if (m.kind === 'render') {
       const d = docFor(m.source, m.n, m.commitId);
@@ -157,6 +168,16 @@ self.onmessage = async (e: MessageEvent<Req>) => {
         const bmp = pg.render(m.scale);
         post({ kind: 'thumb', n: m.n, source: m.source, rgba: bmp.rgba.buffer, width: bmp.width, height: bmp.height }, [bmp.rgba.buffer]);
       } finally { pg.close(); }
+    } else if (m.kind === 'op') {
+      const fn = ops.get(m.op);
+      if (!fn) { post({ kind: 'op-result', id: m.id, error: `no worker op ${m.op}` }); return; }
+      const ctx: OpContext = {
+        pdfium, original: () => original, doc: () => doc,
+        edit: () => { if (!original) return Promise.reject(new Error('no document is open')); return (editP ??= openForEdit(original)); },
+      };
+      try { post({ kind: 'op-result', id: m.id, result: await fn(ctx, m.args) }); } catch (err) {
+        post({ kind: 'op-result', id: m.id, error: String((err as Error).message || err) });
+      }
     } else if (m.kind === 'invalidate') {
       minVersion.set(m.n, Math.max(minVersion.get(m.n) ?? 0, m.version));
     } else if (m.kind === 'commit') {

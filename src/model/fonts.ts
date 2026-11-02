@@ -16,6 +16,8 @@ export const SHIPPED_FILES = ['NotoSans-Regular.ttf', 'NotoSans-Bold.ttf', 'Noto
 export type FontFile = (typeof SHIPPED_FILES)[number];
 /** Bytes, or a URL to fetch (the browser passes Vite `?url` imports; Node reads fonts/ by default). */
 export type FontSource = Uint8Array | ArrayBuffer | string | URL;
+/** Where a catalogue file comes from: a source, or null when it is not available (a host may answer later). */
+export type CatalogSource = (file: string) => FontSource | null | Promise<FontSource | null>;
 
 /** Shipped face ids (FontRef.name when source = 'shipped'). */
 export const SHIPPED_FACES = {
@@ -82,11 +84,11 @@ export class FontRegistry {
   private faces = new Map<string, Face>();
   private refOf = new Map<Face, FontRef>();
   private catBytes = new Map<string, Uint8Array>();
-  private catSource: ((file: string) => FontSource | null) | null;
+  private catSource: CatalogSource | null;
   /** document font name → 'latn' | 'jpan' → bold ('b') or regular ('r') → the catalogue face to set it in */
   private subs = new Map<string, SubstituteChoice>();
 
-  constructor(bytes: Map<FontFile, Uint8Array>, catSource: ((file: string) => FontSource | null) | null = null) {
+  constructor(bytes: Map<FontFile, Uint8Array>, catSource: CatalogSource | null = null) {
     this.bytes = bytes;
     this.catSource = catSource;
   }
@@ -96,9 +98,11 @@ export class FontRegistry {
     const ok = new Set<string>();
     await Promise.all([...new Set(files)].map(async (file) => {
       if (this.catBytes.has(file)) { ok.add(file); return; }
-      const src = this.catSource ? this.catSource(file) : isNode() ? new URL(FONTS_DIR + file, import.meta.url) : null;
-      if (src === null) return;
-      try { this.catBytes.set(file, await fetchBytes(src)); ok.add(file); } catch { /* not available */ }
+      try {
+        const src = this.catSource ? await this.catSource(file) : isNode() ? new URL(FONTS_DIR + file, import.meta.url) : null;
+        if (src === null) return;
+        this.catBytes.set(file, await fetchBytes(src)); ok.add(file);
+      } catch { /* not available */ }
     }));
     return ok;
   }
@@ -174,7 +178,7 @@ export class FontRegistry {
  * given. Browser: pass a URL (or bytes) per file, and `harfbuzz.subsetWasm` (src/text/hb.ts needs it outside Node).
  * A file that is not given and cannot be read is skipped (the JP face is then unavailable).
  */
-export async function loadFonts(sources: Partial<Record<FontFile, FontSource>> = {}, opts: { harfbuzz?: LoadOptions; catalog?: (file: string) => FontSource | null } = {}): Promise<FontRegistry> {
+export async function loadFonts(sources: Partial<Record<FontFile, FontSource>> = {}, opts: { harfbuzz?: LoadOptions; catalog?: CatalogSource } = {}): Promise<FontRegistry> {
   await loadHarfBuzz(opts.harfbuzz);
   const bytes = new Map<FontFile, Uint8Array>();
   await Promise.all(SHIPPED_FILES.map(async (file) => {

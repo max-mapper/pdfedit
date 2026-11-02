@@ -16,9 +16,17 @@ const CATALOG_URLS = import.meta.glob([
   '../fonts/{Tinos,Cousine,Carlito,Caladea}-{Regular,Bold,Italic,BoldItalic}.ttf',
   '../fonts/Selawik-{300,350,400,600,700}.ttf',
   '../fonts/BIZUD{Gothic,PGothic,Mincho,PMincho}-{Regular,Bold}.ttf',
+  '../fonts/{SourceSans3,SourceSans3-Italic,SourceSerif4,SourceSerif4-Italic}-VF.ttf',
+  '../fonts/ipa{g,m}.ttf',   // IPA licence: unmodified and under their own names (app/vite.config.ts keeps the names)
 ], { query: '?url', import: 'default', eager: true }) as Record<string, string>;
 const catalogUrl = new Map(Object.entries(CATALOG_URLS).map(([path, url]) => [path.slice(path.lastIndexOf('/') + 1), url]));
-export const catalogSource = (file: string): string | null => catalogUrl.get(file) ?? null;
+let override: ((file: string) => string | null) | null = null;
+/** Where catalogue files come from instead of this build's assets (null: this build's own). Call before a catalogue
+ *  face is first loaded, in each thread that loads fonts. */
+export function setCatalogSource(source: ((file: string) => string | null) | null): void {
+  override = source;
+}
+export const catalogSource = (file: string): string | null => (override ? override(file) : catalogUrl.get(file) ?? null);
 export { oflUrl, subsetWasmUrl };
 
 /** The font registry (HarfBuzz loaded with this build's hb-subset WASM). */

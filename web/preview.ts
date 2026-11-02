@@ -5,15 +5,80 @@
 //
 // Vertical boxes are drawn as export writes them (src/text/emit.ts): upright glyphs from their horizontal origin as
 // in horizontal text; sideways glyphs under the text matrix `0 -1 1 0 x y`, rotated 90° clockwise about their origin.
+// Everything is drawn through the view's matrix from user space to canvas pixels (canvasMatrix), so a page turned by
+// /Rotate, or with a crop box away from the origin, is drawn as PDFium renders it.
 import type { Face } from '../src/text/face.ts';
 import type { Box, LaidBox, Page, Rect } from '../src/model/types.ts';
+import { deviceMatrix } from '../src/engine/view.ts';
+import { mul, type M6 } from '../src/pdf/ops.ts';
 
 export type View = {
   /** Canvas pixels per PDF point. */
   k: number;
-  /** Page height in points (PDF y is up, canvas y is down). */
+  /** User-space y at the canvas's top edge: the page height for a page whose crop box starts at 0,0, else the crop
+   *  box's top (PDF y is up, canvas y is down). */
   h: number;
+  /** User-space x at the canvas's left edge (the crop box's left), 0 by default. */
+  x0?: number;
+  /** The matrix from user space to canvas pixels, for a page turned by /Rotate (k, h and x0 then describe the crop box
+   *  only); absent for an unturned page, where it is [k 0 0 −k −x0·k h·k]. */
+  m?: M6;
 };
+
+/**
+ * Something painted under the boxes from the page bitmap (masks, then pixels), before the boxes' masks and text:
+ * `rects` are the page areas it paints, so a box redrawn over one of them paints it again. `paint` draws in canvas
+ * pixels (identity transform); `source` is the page bitmap as a drawImage source and `colour` the background colour
+ * sampled around a rectangle (cached by key).
+ */
+export type Underlay = {
+  rects(page: Page): Rect[];
+  paint(c: CanvasRenderingContext2D, page: Page, at: { view: View; source: () => OffscreenCanvas; colour: (key: string, r: Rect) => string }): void;
+};
+
+/** The view of a page's render at k pixels per point: a crop box away from the origin shifts the canvas, and /Rotate
+ *  turns it (src/engine/view.ts). */
+export function viewOf(page: Pick<Page, 'h' | 'view'>, k: number): View {
+  if (!page.view) return { k, h: page.h };
+  const v: View = { k, h: page.view.crop.y1, x0: page.view.crop.x0 };
+  return page.view.rotate ? { ...v, m: deviceMatrix(page.view, k) } : v;
+}
+
+/** The matrix from user space to the canvas pixels of a view. */
+export function canvasMatrix(view: View): M6 {
+  const { k, h, x0 = 0 } = view;
+  return view.m ?? [k, 0, 0, -k, -x0 * k, h * k];
+}
+
+/** A user-space rectangle in canvas pixels (exact: the views turn by quarter turns only). */
+export function canvasRect(view: View, r: Rect): Rect {
+  const m = canvasMatrix(view);
+  const ax = m[0] * r.x0 + m[2] * r.y0 + m[4], ay = m[1] * r.x0 + m[3] * r.y0 + m[5];
+  const bx = m[0] * r.x1 + m[2] * r.y1 + m[4], by = m[1] * r.x1 + m[3] * r.y1 + m[5];
+  return { x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+}
+
+/** The canvas transform that paints a glyph outline (font units, y up) at a user-space origin: upright, or sideways as
+ *  export writes vertical text (`0 -1 1 0 x y Tm`, turned 90° clockwise). */
+export function glyphMatrix(view: View, scale: number, x: number, y: number, sideways: boolean): M6 {
+  return mul(sideways ? [0, -scale, scale, 0, x, y] : [scale, 0, 0, scale, x, y], canvasMatrix(view));
+}
+
+/** The canvas pixels of a dirty rectangle, grown to whole pixels with one to spare. */
+export function dirtyPixels(view: View, r: Rect): { x: number; y: number; w: number; h: number } {
+  const q = canvasRect(view, r);
+  const x = Math.floor(q.x0) - 1, y = Math.floor(q.y0) - 1;
+  return { x, y, w: Math.ceil(q.x1) + 1 - x, h: Math.ceil(q.y1) + 1 - y };
+}
+
+/** Paints the underlays (identity transform, state restored afterwards). */
+export function paintUnderlays(c: CanvasRenderingContext2D, page: Page, list: Underlay[], at: Parameters<Underlay['paint']>[2]): void {
+  if (!list.length) return;
+  c.save();
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  for (const u of list) u.paint(c, page, at);
+  c.restore();
+}
 
 const paths = new Map<number, Map<number, Path2D>>();
 
@@ -66,9 +131,9 @@ export function drawnRect(box: Box, laid: LaidBox): Rect {
 
 /** The colour around a rectangle on the page bitmap: the per-channel median of a ring of pixels just outside it. */
 export function sampleBackground(img: ImageData, view: View, r: Rect): string {
-  const { k, h } = view;
-  const X0 = Math.floor(r.x0 * k) - 2, X1 = Math.ceil(r.x1 * k) + 2;
-  const Y0 = Math.floor((h - r.y1) * k) - 2, Y1 = Math.ceil((h - r.y0) * k) + 2;
+  const q = canvasRect(view, r);
+  const X0 = Math.floor(q.x0) - 2, X1 = Math.ceil(q.x1) + 2;
+  const Y0 = Math.floor(q.y0) - 2, Y1 = Math.ceil(q.y1) + 2;
   const R: number[] = [], G: number[] = [], B: number[] = [];
   const take = (x: number, y: number) => {
     if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
@@ -89,6 +154,10 @@ export class Preview {
   private drawn = new Map<string, Rect>();
   private maskColour = new Map<string, string>();
   private bitmap: ImageData;
+  private source: OffscreenCanvas | null = null;   // the page bitmap as a drawImage source (underlays)
+  private underRects: Rect[] = [];
+  /** Painted under the boxes (set before drawAll). */
+  underlays: Underlay[] = [];
   /** The selected box: drawn too (the editor draws a box as soon as it has the focus, so the caret and the outline
    *  follow what is drawn). Redraw it after changing this. */
   focused: string | null = null;
@@ -106,6 +175,8 @@ export class Preview {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, c.canvas.width, c.canvas.height);
     this.drawn.clear();
+    this.underRects = this.underlays.flatMap((u) => u.rects(page));
+    this.paintUnder(page);
     const edited = page.boxes.filter((b) => this.shows(b));
     const L = new Map(edited.map((b) => [b.id, laid(b)]));
     for (const b of edited) this.mask(b);
@@ -128,15 +199,15 @@ export class Preview {
     if (!dirty) return;
     // boxes removed from the page (a merge) leave their area in `drawn`
     for (const id of [...this.drawn.keys()]) if (!page.boxes.some((b) => b.id === id)) { dirty = union(dirty, this.drawn.get(id)!); this.drawn.delete(id); }
-    const c = this.ctx, { k, h } = this.view;
-    const px = { x: Math.floor(dirty.x0 * k) - 1, y: Math.floor((h - dirty.y1) * k) - 1 };
-    const pw = Math.ceil(dirty.x1 * k) + 1 - px.x, ph = Math.ceil((h - dirty.y0) * k) + 1 - px.y;
+    const c = this.ctx;
+    const px = dirtyPixels(this.view, dirty);
     c.save();
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.beginPath();
-    c.rect(px.x, px.y, pw, ph);
+    c.rect(px.x, px.y, px.w, px.h);
     c.clip();
-    c.clearRect(px.x, px.y, pw, ph);
+    c.clearRect(px.x, px.y, px.w, px.h);
+    if (this.underRects.some((r) => meets(r, dirty!))) this.paintUnder(page);
     const hit = page.boxes.filter((b) => this.shows(b) && this.drawn.has(b.id) && meets(this.drawn.get(b.id)!, dirty!));
     for (const b of hit) this.mask(b);
     for (const b of hit) this.text(laid(b));
@@ -144,34 +215,48 @@ export class Preview {
   }
 
   private mask(b: Box): void {
-    const c = this.ctx, { k, h } = this.view;
+    const c = this.ctx;
     const r = maskRect(b);
     const key = `${b.id}:${r.x0},${r.y0},${r.x1},${r.y1}`;
     let col = this.maskColour.get(key);
     if (!col) { col = sampleBackground(this.bitmap, this.view, r); this.maskColour.set(key, col); }
+    const q = canvasRect(this.view, r);
     c.save();
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = col;
-    c.fillRect(r.x0 * k, (h - r.y1) * k, (r.x1 - r.x0) * k, (r.y1 - r.y0) * k);
+    c.fillRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
     c.restore();
   }
 
+  private paintUnder(page: Page): void {
+    paintUnderlays(this.ctx, page, this.underlays, {
+      view: this.view,
+      source: () => {
+        if (!this.source) { this.source = new OffscreenCanvas(this.bitmap.width, this.bitmap.height); this.source.getContext('2d')!.putImageData(this.bitmap, 0, 0); }
+        return this.source;
+      },
+      colour: (key, r) => {
+        let col = this.maskColour.get(key);
+        if (!col) { col = sampleBackground(this.bitmap, this.view, r); this.maskColour.set(key, col); }
+        return col;
+      },
+    });
+  }
+
   private text(L: LaidBox): void {
-    const c = this.ctx, { k, h } = this.view;
+    const c = this.ctx;
     c.save();
     for (const line of L.lines) {
       for (const run of line.runs) {
         const face = run.face;
         if (!face) continue;
         c.fillStyle = `rgb(${run.color.map((v) => Math.round(v * 255)).join(', ')})`;
-        const s = (run.size / face.upem) * k;
-        // sideways glyphs (vertical text): export's `0 -1 1 0 x y Tm`, i.e. glyph (gx, gy) → page (x + gy, y - gx);
-        // on the canvas (y down) that is the matrix (0, s, s, 0)
+        const s = run.size / face.upem;
+        // sideways glyphs (vertical text): export's `0 -1 1 0 x y Tm`, i.e. glyph (gx, gy) → page (x + gy, y - gx)
         const sideways = run.orientation === 'sideways' || face.orientation === 'sideways';
         for (const g of run.glyphs) {
-          const X = (line.x + g.x) * k, Y = (h - (line.baseline + g.y)) * k;
-          if (sideways) c.setTransform(0, s, s, 0, X, Y);
-          else c.setTransform(s, 0, 0, -s, X, Y);
+          const m = glyphMatrix(this.view, s, line.x + g.x, line.baseline + g.y, sideways);
+          c.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           c.fill(glyphPath(face, g.gid));
         }
       }

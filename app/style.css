@@ -151,3 +151,7 @@ input[type=color] { width: 30px; height: 26px; padding: 1px 2px; border: 1px sol
 .chip.none { background: #f1f2f4; color: var(--muted); }
 
 @media (max-width: 1000px) { #body { grid-template-columns: 0 1fr 280px; } #thumbs { display: none; } }
+
+/* layers of optional modules: a tool's layer over each page (app/toolhost.ts), a connector's marks in the text box */
+.tool-layer { position: absolute; inset: 0; pointer-events: none; }
+#boxdeco { position: absolute; inset: 0; pointer-events: none; }

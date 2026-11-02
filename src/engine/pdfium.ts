@@ -1,6 +1,7 @@
 // PDFium (WebAssembly, @embedpdf/pdfium) for reading and rendering only. See docs/CONTRACTS.md § src/engine.
 // Nothing here writes a page: PDFium's content writer is lossy, so edits go through src/pdf.
 import { init } from '@embedpdf/pdfium';
+import { toView, viewBox, type ViewBox } from './view.ts';
 
 export type Rect = { x0: number; y0: number; x1: number; y1: number };
 export type Char = {
@@ -33,6 +34,20 @@ export type Shape = {
   rects?: Rect[];
 };
 export type Bitmap = { width: number; height: number; rgba: Uint8ClampedArray<ArrayBuffer> };
+/** A page object as PDFium lists it: every object in paint order, a form XObject before its contents (pre-order).
+ *  Bounds and the quad are in page space (objects inside forms are mapped through the forms' matrices). */
+export type EngineObject = {
+  index: number;            // position in this list (paint order)
+  kind: 'text' | 'path' | 'image' | 'shading' | 'form' | 'unknown';
+  depth: number;            // forms entered to reach it (0: the page's own content)
+  parent: number | null;    // the form object it is inside
+  bounds: Rect;
+  /** The object's own outline turned with it (FPDFPageObj_GetRotatedBounds), four corners; null when not given. */
+  quad: [number, number][] | null;
+  mcid: number;             // marked-content id, −1 when none
+  marks: string[];          // marked-content tags around it, outermost first
+  transparent: boolean;     // FPDFPageObj_HasTransparency
+};
 
 // PDFium constants (public/fpdfview.h, fpdf_edit.h)
 const FPDF_PAGEOBJ_TEXT = 1;
@@ -82,7 +97,17 @@ export class PdfiumOpenError extends Error {
 export type PdfDoc = { pageCount: number; page(i: number): PdfPage; close(): void };
 export type PdfPage = {
   index: number; size: { w: number; h: number };
+  /** How user space maps onto the page as shown (src/engine/view.ts): /Rotate and the crop box. `size` is view.w × view.h. */
+  view: ViewBox;
   chars(): Char[]; textObjects(): TextObj[]; shapes(): Shape[]; render(scale: number): Bitmap; close(): void;
+  /** Every page object in paint order (forms entered), the material for the page object model (src/objects). */
+  objects(): EngineObject[];
+  /**
+   * The render hit test: for each listed object (EngineObject.index), whether hiding it changes the pixel at user-space
+   * point (x, y) of a render at `scale` pixels per point. An object whose paint there matches what is under it
+   * (white on white) reads as false.
+   */
+  paintsAt(indices: number[], x: number, y: number, scale?: number): boolean[];
 };
 
 let shared: Promise<Pdfium> | null = null;
@@ -137,6 +162,34 @@ function makePdfium(M: Module): Pdfium {
     } finally { free(buf); }
   }
 
+  /** A page's view box: its rotation and crop box as PDFium reports them, checked against the shown size; when the
+   *  boxes are inherited or missing, the crop box is found by mapping the shown page's corners back to user space. */
+  function pageView(pg: number, size: { w: number; h: number }): ViewBox {
+    const rotate = (M.FPDFPage_GetRotation(pg) & 3) * 90;
+    const box = (get: 'FPDFPage_GetCropBox' | 'FPDFPage_GetMediaBox'): Rect | null => {
+      if (!M[get](pg, scratch, scratch + 4, scratch + 8, scratch + 12)) return null;   // left, bottom, right, top
+      const r = { x0: f32(scratch), y0: f32(scratch + 4), x1: f32(scratch + 8), y1: f32(scratch + 12) };
+      return { x0: Math.min(r.x0, r.x1), y0: Math.min(r.y0, r.y1), x1: Math.max(r.x0, r.x1), y1: Math.max(r.y0, r.y1) };
+    };
+    const media = box('FPDFPage_GetMediaBox');
+    const shown = (r: Rect) => { const v = viewBox(rotate, r); return Math.abs(v.w - size.w) < 0.5 && Math.abs(v.h - size.h) < 0.5; };
+    let crop = box('FPDFPage_GetCropBox');
+    if (crop && media) crop = { x0: Math.max(crop.x0, media.x0), y0: Math.max(crop.y0, media.y0), x1: Math.min(crop.x1, media.x1), y1: Math.min(crop.y1, media.y1) };
+    if (!crop || !shown(crop)) crop = media && shown(media) ? media : null;
+    if (!crop) {
+      // the corners of the shown page (device space at 64 pixels per point) back in user space
+      const K = 64, sw = Math.round(size.w * K), sh = Math.round(size.h * K);
+      const pts: [number, number][] = [];
+      for (const [dx, dy] of [[0, 0], [sw, sh]]) {
+        M.FPDF_DeviceToPage(pg, 0, 0, sw, sh, 0, dx, dy, scratch, scratch + 8);
+        pts.push([f64(scratch), f64(scratch + 8)]);
+      }
+      crop = { x0: Math.min(pts[0][0], pts[1][0]), y0: Math.min(pts[0][1], pts[1][1]), x1: Math.max(pts[0][0], pts[1][0]), y1: Math.max(pts[0][1], pts[1][1]) };
+    }
+    const v = viewBox(rotate, crop, media);
+    return { ...v, w: size.w, h: size.h };
+  }
+
   function open(bytes: Uint8Array): PdfDoc {
     const mem = malloc(bytes.length);
     raw.HEAPU8.set(bytes, mem);
@@ -150,6 +203,7 @@ function makePdfium(M: Module): Pdfium {
       if (!pg) throw new Error(`PDFium could not load page ${index}`);
       const tp = M.FPDFText_LoadPage(pg);
       const size = { w: M.FPDF_GetPageWidthF(pg), h: M.FPDF_GetPageHeightF(pg) };
+      const view = pageView(pg, size);
       let objs: { handle: number; rec: TextObj }[] | null = null;
 
       function walkObjects(): { handle: number; rec: TextObj }[] {
@@ -362,9 +416,75 @@ function makePdfium(M: Module): Pdfium {
         } finally { M.FPDFBitmap_Destroy(bmp); }
       }
 
+      // ── page objects (src/objects) ──────────────────────────────────────────────────────────────────
+      let engineObjs: { handle: number; rec: EngineObject }[] | null = null;
+      const KINDS: Record<number, EngineObject['kind']> = { [FPDF_PAGEOBJ_TEXT]: 'text', [FPDF_PAGEOBJ_PATH]: 'path', [FPDF_PAGEOBJ_IMAGE]: 'image', [FPDF_PAGEOBJ_SHADING]: 'shading', [FPDF_PAGEOBJ_FORM]: 'form' };
+      const markName = (mark: number): string => {
+        if (!M.FPDFPageObjMark_GetName(mark, 0, 0, scratch + 60)) return '';
+        const n = u32(scratch + 60);
+        if (n <= 2) return '';
+        const b = malloc(n);
+        try { M.FPDFPageObjMark_GetName(mark, b, n, scratch + 60); return utf16At(b, n); } finally { free(b); }
+      };
+      function listObjects(): { handle: number; rec: EngineObject }[] {
+        if (engineObjs) return engineObjs;
+        const out: { handle: number; rec: EngineObject }[] = [];
+        const visit = (h: number, parent: number | null, depth: number, outer: M6 | null) => {
+          const type = M.FPDFPageObj_GetType(h);
+          M.FPDFPageObj_GetBounds(h, scratch, scratch + 4, scratch + 8, scratch + 12);
+          const corners = (pts: [number, number][]) => (outer ? pts.map(([x, y]) => apply(outer, x, y)) : pts);
+          const bb = corners([[f32(scratch), f32(scratch + 4)], [f32(scratch + 8), f32(scratch + 4)], [f32(scratch), f32(scratch + 12)], [f32(scratch + 8), f32(scratch + 12)]]);
+          let quad: [number, number][] | null = null;
+          if (M.FPDFPageObj_GetRotatedBounds(h, scratch + 16)) quad = corners([0, 1, 2, 3].map((k) => [f32(scratch + 16 + k * 8), f32(scratch + 20 + k * 8)] as [number, number]));
+          const marks: string[] = [];
+          const nm = M.FPDFPageObj_CountMarks(h);
+          for (let k = 0; k < nm; k++) { const mk = M.FPDFPageObj_GetMark(h, k); if (mk) marks.push(markName(mk)); }
+          const rec: EngineObject = {
+            index: out.length, kind: KINDS[type] ?? 'unknown', depth, parent,
+            bounds: { x0: Math.min(...bb.map((p) => p[0])), y0: Math.min(...bb.map((p) => p[1])), x1: Math.max(...bb.map((p) => p[0])), y1: Math.max(...bb.map((p) => p[1])) },
+            quad, mcid: M.FPDFPageObj_GetMarkedContentID(h), marks, transparent: !!M.FPDFPageObj_HasTransparency(h),
+          };
+          out.push({ handle: h, rec });
+          if (type === FPDF_PAGEOBJ_FORM) {
+            const fm = matrixOf(h);
+            const m = outer ? mul(fm, outer) : fm;
+            const n = M.FPDFFormObj_CountObjects(h);
+            for (let k = 0; k < n; k++) visit(M.FPDFFormObj_GetObject(h, k), rec.index, depth + 1, m);
+          }
+        };
+        const n = M.FPDFPage_CountObjects(pg);
+        for (let k = 0; k < n; k++) visit(M.FPDFPage_GetObject(pg, k), null, 0, null);
+        engineObjs = out;
+        return out;
+      }
+
+      function paintsAt(indices: number[], x: number, y: number, scale = 2): boolean[] {
+        const list = listObjects();
+        const [vx, vy] = toView(view, x, y);
+        const px = Math.floor(vx * scale), py = Math.floor((size.h - vy) * scale);
+        const W = Math.max(1, Math.round(size.w * scale)), H = Math.max(1, Math.round(size.h * scale));
+        if (px < 0 || py < 0 || px >= W || py >= H) return indices.map(() => false);
+        const bmp = M.FPDFBitmap_CreateEx(1, 1, FPDFBitmap_BGRA, 0, 0);
+        const pixel = (): number => {
+          M.FPDFBitmap_FillRect(bmp, 0, 0, 1, 1, 0xffffffff);
+          raw._FPDF_RenderPageBitmap(bmp, pg, -px, -py, W, H, 0, FPDF_ANNOT);
+          return u32(M.FPDFBitmap_GetBuffer(bmp));
+        };
+        const near = (a: number, b: number) => [0, 8, 16, 24].every((sh) => Math.abs(((a >>> sh) & 255) - ((b >>> sh) & 255)) <= 8);
+        try {
+          const base = pixel();
+          return indices.map((i) => {
+            const o = list[i];
+            if (!o) return false;
+            M.FPDFPageObj_SetIsActive(o.handle, false);
+            try { return !near(pixel(), base); } finally { M.FPDFPageObj_SetIsActive(o.handle, true); }
+          });
+        } finally { M.FPDFBitmap_Destroy(bmp); }
+      }
+
       const close = () => { M.FPDFText_ClosePage(tp); M.FPDF_ClosePage(pg); open.delete(close); };
       open.add(close);
-      return { index, size, chars, textObjects: () => walkObjects().map((o) => o.rec), shapes, render, close };
+      return { index, size, view, chars, textObjects: () => walkObjects().map((o) => o.rec), shapes, render, close, objects: () => listObjects().map((o) => o.rec), paintsAt };
     }
 
     return {
