@@ -2,7 +2,7 @@
 // headless Chromium, loads a PDF through the file input, and waits for page 1 to render in the worker. Every request
 // to any other host is aborted and listed, so a pass also proves the page needs nothing from outside.
 //   node scripts/web-smoke.ts <file.pdf>
-// Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME.
+// Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME (default: the one Playwright installed).
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -10,7 +10,7 @@ import { extname, join, normalize } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PW_CORE || 'playwright-core');
-const CHROME = process.env.CHROME || '/home/node/.cache/ms-playwright/chromium-1248/chrome-linux-arm64/chrome';
+const CHROME = process.env.CHROME || chromium.executablePath();
 const ROOT = join(import.meta.dirname, '..', 'dist-web');
 const pdf = process.argv[2];
 if (!pdf) { console.error('usage: node scripts/web-smoke.ts <file.pdf>'); process.exit(2); }

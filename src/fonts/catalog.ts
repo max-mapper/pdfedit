@@ -14,14 +14,14 @@ export type FamilyId = string;
 export type Classification = 'sans' | 'serif' | 'mono' | 'rounded' | 'script' | 'display';
 /** ISO 15924: Latin, and Japanese (Han + kana). */
 export type Script = 'latn' | 'jpan';
-export type Licence = 'OFL-1.1' | 'Apache-2.0' | 'GPL-2.0-with-font-exception';
+export type Licence = 'OFL-1.1' | 'Apache-2.0';
 export type Tier = 'core' | 'extended';
 
 /** Where a file comes from. `google` paths are relative to the google/fonts repository at GOOGLE_FONTS_COMMIT. */
 export type Source =
   | { kind: 'google'; path: string }
   | { kind: 'url'; url: string }
-  | { kind: 'zip' | 'tgz'; url: string; member: string };
+  | { kind: 'zip'; url: string; member: string };
 
 export type FontFileSpec = {
   /** File name in fonts/. */
@@ -76,7 +76,7 @@ const SELAWIK_COMMIT = '89362e84731d1f5777fa078fd4d5ebbd339e4378';
 const TINOS_COMMIT = '3b4482a99b80ea5fc75f187b1be3120a3f5905b3';
 const MPLUS_COMMIT = 'eb604901d6f04b6f7f2a84b0378c58df84a9dba6';   // google/fonts ofl/mplusrounded1c carries no OFL.txt
 
-/** The download URL of a source (for zip and tgz: the archive's URL). */
+/** The download URL of a source (for zip: the archive's URL). */
 export function sourceUrl(src: Source): string {
   if (src.kind !== 'google') return src.url;
   const path = src.path.split('/').map(encodeURIComponent).join('/');
@@ -94,8 +94,6 @@ function statics(dir: string, prefix: string, list: [string, number, boolean, nu
   }));
 }
 
-const LIBERATION_NARROW_TGZ = 'https://github.com/liberationfonts/liberation-sans-narrow/files/2579431/liberation-narrow-fonts-ttf-1.07.6.tar.gz';
-const LIBERATION_NARROW_DIR = 'liberation-narrow-fonts-ttf-1.07.6/';
 const SELAWIK_ZIP = 'https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip';
 
 export const CATALOG: Family[] = [
@@ -170,16 +168,6 @@ export const CATALOG: Family[] = [
       file: `Selawik-${w}.ttf`, src: { kind: 'zip', url: SELAWIK_ZIP, member: `${m}.ttf` } as Source, bytes: b, weight: w, italic: false,
     })),
     note: 'Open replacement for Segoe UI (metrically compatible; no kerning, no italic).',
-  },
-  {
-    id: 'liberation-sans-narrow', name: 'Liberation Sans Narrow', classification: 'sans', scripts: ['latn'], pitch: 'proportional',
-    licence: 'GPL-2.0-with-font-exception', licenceSrc: { kind: 'tgz', url: LIBERATION_NARROW_TGZ, member: `${LIBERATION_NARROW_DIR}License.txt` }, tier: 'core',
-    metricCompatible: ['Arial Narrow', 'Helvetica Narrow'],
-    files: ([['Regular', 400, false, 113036], ['Bold', 700, false, 110260], ['Italic', 400, true, 132460], ['BoldItalic', 700, true, 128476]] as const).map(([s, w, it, b]) => ({
-      file: `LiberationSansNarrow-${s}.ttf`, src: { kind: 'tgz', url: LIBERATION_NARROW_TGZ, member: `${LIBERATION_NARROW_DIR}LiberationSansNarrow-${s}.ttf` } as Source,
-      bytes: b, weight: w, width: 82, italic: it,
-    })),
-    note: 'GPL 2 with the font exception: embedding the font (or unaltered portions) in a document does not put the document under the GPL.',
   },
   // ------------------------------------------------------------------------------------------------- Japanese core
   {
@@ -391,10 +379,6 @@ const SHA256: Record<string, string> = {
   'LINESeedJP-ExtraBold.ttf': 'e310cf97ddae9e9deb15f769fd2f68a2ff24bd0a19953c5191df941cc7952c95',
   'LINESeedJP-Regular.ttf': '04a6c0077ddb8ba5af3638bd76b4600708dde7b38df047b40fbe6f3af358d3c3',
   'LINESeedJP-Thin.ttf': 'e59cfc7cde710b0968e850b5fae4714d719e39d9bb731f7aa8c957f661c6bbec',
-  'LiberationSansNarrow-Bold.ttf': '8e5eb5090ef4a3143794c230b82f174f7f2fbbfcd6cb789ccfa1f90bf8795d54',
-  'LiberationSansNarrow-BoldItalic.ttf': '57fe1513fa84379d36e7da6fd9a45d053ded5e895042ab36692d8d05a8c4f4d8',
-  'LiberationSansNarrow-Italic.ttf': 'c5de4127c273dbcfc173414d170448cbe800c3a7fb1f97beaeee1b076d6a5eea',
-  'LiberationSansNarrow-Regular.ttf': '546e8957e5dccece4ac07ea02f57a5cdb3dc3b0e902ea75a837a7784ba4b7eef',
   'MPLUS1-VF.ttf': '32dab296a06c3e87841ecd2bc9912434a964ad541e22ea19f764969dae93fced',
   'MPLUSRounded1c-Black.ttf': 'd5981a59ccc5f00da1bd3ae46750fa95cd165b0e6b3a5fc7a1945f94c59449e3',
   'MPLUSRounded1c-Bold.ttf': 'c358630584e8e2d8fbd6121d0f4693255ffef6d1e6d4f3441fd6e5a963a11f9e',
@@ -468,8 +452,6 @@ const MEASURED: Record<FamilyId, FamilyMetrics> = {
     widths: [504, 560, 454, 574, 483, 325, 509, 582, 293, 292, 536, 286, 881, 591, 539, 571, 560, 410, 432, 345, 575, 497, 737, 505, 492, 444, 671, 654, 642, 749, 653, 599, 725, 815, 390, 518, 694, 604, 927, 767, 744, 610, 744, 702, 561, 619, 756, 667, 976, 710, 615, 602, 614, 430, 559, 552, 565, 528, 566, 502, 596, 566] },
   'selawik': { xHeight: 476, capHeight: 700, ascent: 990, descent: -210, boldRatio: 1.086,
     widths: [509, 588, 462, 589, 523, 313, 589, 566, 242, 242, 497, 242, 861, 566, 586, 588, 589, 348, 424, 339, 566, 479, 723, 459, 484, 452, 645, 573, 619, 701, 506, 488, 686, 710, 266, 357, 580, 471, 898, 748, 754, 560, 754, 598, 531, 524, 687, 621, 934, 590, 553, 570, 539, 539, 539, 539, 539, 539, 539, 539, 539, 539] },
-  'liberation-sans-narrow': { xHeight: 528, capHeight: 688, ascent: 728, descent: -210, boldRatio: 1.1,
-    widths: [456, 456, 410, 456, 456, 228, 456, 456, 182, 182, 410, 182, 683, 456, 456, 456, 456, 273, 410, 228, 456, 410, 592, 410, 410, 410, 547, 547, 592, 592, 547, 501, 638, 592, 228, 410, 547, 456, 683, 592, 638, 547, 638, 592, 547, 501, 592, 547, 774, 547, 547, 501, 456, 456, 456, 456, 456, 456, 456, 456, 456, 456] },
   'noto-sans-jp': { xHeight: 543, capHeight: 733, ascent: 1000, descent: -200, boldRatio: 1.068,
     widths: [563, 618, 510, 620, 554, 325, 564, 607, 275, 275, 552, 284, 926, 610, 606, 620, 620, 388, 468, 377, 607, 521, 802, 498, 521, 475, 608, 657, 638, 688, 589, 552, 689, 728, 293, 535, 646, 543, 812, 723, 742, 633, 742, 635, 596, 599, 721, 575, 878, 573, 531, 603, 555, 555, 555, 555, 555, 555, 555, 555, 555, 555] },
   'noto-serif-jp': { xHeight: 516, capHeight: 728, ascent: 1151, descent: -286, boldRatio: 1.05,

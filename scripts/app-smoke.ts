@@ -10,7 +10,7 @@
 // result and checks in PDFium that the typed text is in it. Every request to another host is aborted and listed.
 //   node scripts/app-smoke.ts [out-dir]
 // SHOT=<file.png> saves a screenshot of the window after the fit. Playwright comes from PW_CORE (default: the
-// playwright-core package), Chromium from CHROME. Synthetic text only.
+// playwright-core package), Chromium from CHROME (default: the one Playwright installed). Synthetic text only.
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -23,7 +23,7 @@ import { openPdfium } from '../src/engine/pdfium.ts';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PW_CORE || 'playwright-core');
-const CHROME = process.env.CHROME || '/home/node/.cache/ms-playwright/chromium-1248/chrome-linux-arm64/chrome';
+const CHROME = process.env.CHROME || chromium.executablePath();
 const ROOT = join(import.meta.dirname, '..', 'dist-app');
 const OUT = process.argv[2] || (await mkdtemp(join(tmpdir(), 'pdfedit-app-smoke-')));
 

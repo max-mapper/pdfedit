@@ -4,7 +4,7 @@
 // preview redraw + frame and input updates, measured in the page's input handler) from window.__editor. Then it
 // checks the preview drew glyphs, the model holds the typed text, undo restores it, and nothing left the page.
 //   node scripts/editor-smoke.ts [out.pdf]
-// SHOT=<file.png> saves a screenshot around the edited box. Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME.
+// SHOT=<file.png> saves a screenshot around the edited box. Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME (default: the one Playwright installed).
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -13,7 +13,7 @@ import { gridPdf } from '../src/model/testkit.ts';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PW_CORE || 'playwright-core');
-const CHROME = process.env.CHROME || '/home/node/.cache/ms-playwright/chromium-1248/chrome-linux-arm64/chrome';
+const CHROME = process.env.CHROME || chromium.executablePath();
 const ROOT = join(import.meta.dirname, '..', 'dist-web');
 const pdfPath = process.argv[2] || '/tmp/pdfedit-grid100.pdf';
 await writeFile(pdfPath, await gridPdf(100));

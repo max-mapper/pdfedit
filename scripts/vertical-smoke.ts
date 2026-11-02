@@ -12,7 +12,7 @@
 //      draws it at its new frame (orange there, masked where it was) with a dashed outline; undo and redo follow.
 // Nothing may load from another host.
 //   node scripts/vertical-smoke.ts [out.pdf]
-// SHOT=<file.png> saves a screenshot of the page after step 4. Playwright from PW_CORE, Chromium from CHROME.
+// SHOT=<file.png> saves a screenshot of the page after step 4. Playwright from PW_CORE, Chromium from CHROME (default: the one Playwright installed).
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -29,7 +29,7 @@ import type { Doc, Rect } from '../src/model/types.ts';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PW_CORE || 'playwright-core');
-const CHROME = process.env.CHROME || '/home/node/.cache/ms-playwright/chromium-1248/chrome-linux-arm64/chrome';
+const CHROME = process.env.CHROME || chromium.executablePath();
 const ROOT = join(import.meta.dirname, '..', 'dist-web');
 const pdfPath = process.argv[2] || '/tmp/pdfedit-vertical.pdf';
 

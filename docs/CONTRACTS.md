@@ -106,3 +106,9 @@ The source files' header comments are authoritative; this is the map.
   `commandTranslator`, `tableTranslator`, `commandShortener` (opt-in targeted shortening of unfit boxes).
 - `src/fonts/`: `suggestSubstitutes(info) → Suggestion[]` (the font matcher), `CATALOG` (the open font families
   `scripts/fetch-fonts.ts` downloads), `prepareSubstitutes(doc, fonts)` (sets each document font's matched face).
+- `src/embed/`: `matchPairs(paragraphs, pairs) → { translations, used, unmatched }` and `createMatcher(pairs)` (paragraphs
+  to translation pairs by normalised source text), `serialiseState(doc)` / `parseState` / `applyState(doc, state)` (a
+  saved version: the edited boxes by page), `preparePage(editor, n, matcher, pageState)` (translate, saved boxes back,
+  fit), `hostReport` / `encodeReportHeader` / `substitutionsOf` (the export summary a host receives),
+  `segLinkTemplate(value, href)` / `segLinkFor(template, seg)` (the host's link to a segment). Used by the app's
+  embed mode (`app/embed.ts`, `docs/EMBED.md`).

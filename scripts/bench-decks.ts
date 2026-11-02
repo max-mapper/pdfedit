@@ -1,5 +1,5 @@
-// The deck bench: pdfedit's pipeline on a list of PDF pages, rendering each page as original, English (no fit) and
-// English fitted, for a judge and the compare viewer. Cases and outputs live outside the repository (private documents).
+// A benchmark of pdfedit's pipeline over the PDF pages listed in a cases file given on the command line (--cases):
+// each page is rendered as original, English (no fit) and English fitted, for a judge and the compare viewer.
 //   node scripts/bench-decks.ts --cases <cases.json> --out <dir> --translate-cmd "<cmd> [args]" [--width 1280] [--only d01,d02]
 //     [--shorten-cmd "<cmd> [args]"]   targeted shortening of unfit and over-shrunk boxes (listed in report.json)
 // cases.json: [{ "key": "d01", "pdf": "/abs/d01.pdf", "pages": [1, 2, 3] }]   (1-based pages)

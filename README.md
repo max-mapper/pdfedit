@@ -25,6 +25,10 @@ The translator command reads `{"pages": {"<n>": ["paragraph", …]}}` on stdin. 
 
 Node 24 runs the TypeScript directly. Module contracts are in `docs/CONTRACTS.md`.
 
+## Embed
+
+A host page can frame the editor and serve one document through an HTTP API: load, save versions, export. Build it with `node scripts/build-embed.mjs <outDir>`. The API is in `docs/EMBED.md`.
+
 ## Licence
 
 CC BY-SA 4.0 (see `LICENSE`). Commercial use is allowed with credit to pdfedit by max-mapper; changed versions are shared under the same licence.

@@ -1,5 +1,5 @@
 // Fetches the substitute font families of src/fonts/catalog.ts from their pinned upstream sources (the google/fonts
-// repository at a fixed commit, the Selawik and Liberation Sans Narrow releases) into fonts/, with each family's
+// repository at a fixed commit, the Selawik release) into fonts/, with each family's
 // licence in fonts/licenses/<id>.txt, and records SHA-256 sums in fonts/SUBSTITUTES.local.sha256. A file whose
 // catalog entry pins a sum is refused when it does not match. Nothing is sent but the GET of each file's URL.
 //
@@ -13,7 +13,7 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { inflateRawSync } from 'node:zlib';
 import { CATALOG, familyBytes, sourceUrl, type Family, type FontFileSpec, type Source } from '../src/fonts/catalog.ts';
 
 const FONTS = new URL('../fonts/', import.meta.url);
@@ -60,7 +60,6 @@ function get(url: string): Promise<Uint8Array> {
 async function fetchSource(src: Source): Promise<Uint8Array> {
   const bytes = await get(sourceUrl(src));
   if (src.kind === 'zip') return unzipMember(bytes, src.member);
-  if (src.kind === 'tgz') return untarMember(gunzipSync(bytes), src.member);
   return bytes;
 }
 
@@ -90,22 +89,6 @@ export function unzipMember(zip: Uint8Array, member: string): Uint8Array {
     p += 46 + nameLen + extraLen + commentLen;
   }
   throw new Error(`zip: no member ${member}`);
-}
-
-/** One regular file of a (ustar) tar archive. */
-export function untarMember(tar: Uint8Array, member: string): Uint8Array {
-  const dec = new TextDecoder();
-  const str = (a: number, b: number): string => dec.decode(tar.subarray(a, b)).replace(/\0.*$/s, '');
-  for (let p = 0; p + 512 <= tar.length;) {
-    if (tar.subarray(p, p + 512).every((x) => x === 0)) break;
-    const prefix = str(p + 345, p + 500);
-    const name = (prefix ? prefix + '/' : '') + str(p, p + 100);
-    const size = parseInt(str(p + 124, p + 136).trim() || '0', 8);
-    const type = String.fromCharCode(tar[p + 156] || 48);
-    if (name === member && (type === '0' || type === '\0')) return tar.slice(p + 512, p + 512 + size);
-    p += 512 + Math.ceil(size / 512) * 512;
-  }
-  throw new Error(`tar: no member ${member}`);
 }
 
 function writeAtomic(url: URL, bytes: Uint8Array): void {

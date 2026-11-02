@@ -2,7 +2,11 @@
   --bg: #f5f6f8; --canvas: #e8eaee; --panel: #fff; --line: #e1e4e8; --line2: #d3d7dd; --text: #1f2328; --muted: #6b7280;
   --accent: #2563eb; --accent-soft: #e8effd; --red: #d93025; --red-soft: #fdecea; --orange: #e8710a; --green: #16794a;
   --green-soft: #e6f4ec; --amber: #a15c00; --amber-soft: #fff4e0;
+  --seg-a: #0d948826; --seg-b: #7c3aed22; --seg-bound: #b45309; --seg-ro: #6b728033;
   color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --seg-a: #2dd4bf33; --seg-b: #a78bfa33; --seg-bound: #fbbf24; --seg-ro: #9ca3af40; }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -82,6 +86,14 @@ input[type=color] { width: 30px; height: 26px; padding: 1px 2px; border: 1px sol
        overflow: hidden; white-space: pre; opacity: 0; color: transparent; background: transparent; caret-color: transparent;
        font-size: 12px; pointer-events: none; z-index: 0; }
 #selrects { position: absolute; inset: 0; pointer-events: none; }
+/* embed mode: segment ranges of a linked box while it is edited (app/main.ts drawSegments; never exported) */
+#segrects { position: absolute; inset: 0; pointer-events: none; }
+#segrects .segr { position: absolute; border-radius: 2px; }
+#segrects .segr.seg-a { background: var(--seg-a); }
+#segrects .segr.seg-b { background: var(--seg-b); }
+#segrects .segr.ro { background: repeating-linear-gradient(135deg, var(--seg-ro) 0 3px, transparent 3px 6px); }
+#segrects .segb { position: absolute; background: var(--seg-bound); border-radius: 1px; }
+#editbox:not(.editing) #segrects { display: none; }
 #selrects .selr { position: absolute; background: #2563eb40; }
 #caret { position: absolute; background: var(--accent); pointer-events: none; z-index: 1; }
 #caret.blink { animation: pe-blink 1.06s steps(1) 0.5s infinite; }
@@ -153,3 +165,9 @@ input[type=color] { width: 30px; height: 26px; padding: 1px 2px; border: 1px sol
 .chip.none { background: #f1f2f4; color: var(--muted); }
 
 @media (max-width: 1000px) { #body { grid-template-columns: 0 1fr 280px; } #thumbs { display: none; } }
+
+/* embed mode (app/embed.ts): the Document card */
+#embed p { margin: 0 0 6px; }
+ul.untranslated { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+ul.untranslated li { padding: 3px 0; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+ul.untranslated li.edited { color: var(--muted); }

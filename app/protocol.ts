@@ -15,7 +15,11 @@ export type Req =
   /** A newer edit on page `n`: queued commits of older versions are skipped. */
   | { kind: 'invalidate'; n: number; version: number }
   /** The final export of the whole document. */
-  | { kind: 'export'; id: number; doc: Doc };
+  | { kind: 'export'; id: number; doc: Doc }
+  /** Embed mode (app/embed.ts): read page `n`, detect its boxes and send the model page, without a render. */
+  | { kind: 'model'; n: number }
+  /** Embed mode: the substitution catalogue comes from the host, `<base>/<file>` (sent before 'open'). */
+  | { kind: 'fonts'; base: string };
 
 export type CommitResult = {
   kind: 'committed'; n: number; id: number; version: number;
@@ -36,4 +40,5 @@ export type Res =
   | { kind: 'thumb'; n: number; source: Source; rgba: ArrayBuffer; width: number; height: number }
   | CommitResult
   | { kind: 'exported'; id: number; bytes: ArrayBuffer | null; report: ExportReport | null; error: string | null }
+  | { kind: 'model'; n: number; page: Page; chars: number; objs: number; detectMs: number }
   | { kind: 'error'; message: string; context: string };

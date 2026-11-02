@@ -150,8 +150,7 @@ test('Office fonts: Calibri → Carlito, Cambria → Caladea, Segoe UI → Selaw
   assert.equal(seg.weight, 600);
   assert.equal(top({ name: 'Georgia-Italic' }).file, 'Gelasio-Italic-VF.ttf');
   const n = top({ name: 'ArialNarrow-Bold' });
-  assert.equal(n.family, 'liberation-sans-narrow');
-  assert.equal(n.file, 'LiberationSansNarrow-Bold.ttf');
+  assert.equal(n.family, 'noto-sans', 'Arial Narrow takes the narrowed Noto Sans');
   assert.equal(top({ name: 'CourierNewPSMT' }).family, 'cousine');
 });
 
@@ -232,7 +231,7 @@ test('the catalog: every alias names catalog families; files are unique TrueType
   assert.equal(new Set(files).size, files.length);
   for (const f of files) assert.match(f, /\.ttf$/);
   for (const f of CATALOG) {
-    assert.ok(['OFL-1.1', 'Apache-2.0', 'GPL-2.0-with-font-exception'].includes(f.licence));
+    assert.ok(['OFL-1.1', 'Apache-2.0'].includes(f.licence));
     assert.ok(f.scripts.includes('latn'));
     assert.ok(f.files.some((x) => !x.italic), `${f.id} has an upright face`);
     if (f.proportional) assert.equal(FAMILIES.get(f.proportional)?.pitch, 'proportional');

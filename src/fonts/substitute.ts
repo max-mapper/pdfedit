@@ -340,7 +340,7 @@ export const ALIASES: readonly Alias[] = [
   { re: /^gelasio/, label: 'Gelasio', cls: 'serif', latn: ['gelasio'], metric: true },
   { re: /^jost/, label: 'Jost', cls: 'sans', latn: ['jost'] },
   // --- Western: metric-compatible first (fontconfig 30-metric-aliases.conf)
-  { re: /^(?:arialnarrow|liberationsansnarrow|helvetica(?:neue)?(?:lt)?(?:std|pro|com)?(?:narrow|cond(?:ensed)?)|helveticanarrow|nimbussansnarrow|nimbussanscondensed)/, label: 'Arial Narrow', cls: 'sans', latn: ['liberation-sans-narrow', 'noto-sans'], metric: true, width: 82 },
+  { re: /^(?:arialnarrow|liberationsansnarrow|helvetica(?:neue)?(?:lt)?(?:std|pro|com)?(?:narrow|cond(?:ensed)?)|helveticanarrow|nimbussansnarrow|nimbussanscondensed)/, label: 'Arial Narrow', cls: 'sans', latn: ['noto-sans'], metric: true, width: 82 },
   { re: /^arialblack/, label: 'Arial Black', cls: 'sans', latn: ['noto-sans', 'arimo'], weight: 900 },
   { re: /^arialrounded/, label: 'Arial Rounded', cls: 'rounded', latn: ['mplus-rounded-1c', 'zen-maru-gothic'], weight: 700 },
   { re: /^arialunicode/, label: 'Arial Unicode MS', cls: 'sans', latn: ['arimo', 'noto-sans'], jpan: ['noto-sans-jp'] },
