@@ -1,5 +1,5 @@
-// Adding images (labs: app/tools/place.ts), headless: serves dist-app (build it first: npx vite build app --config
-// app/vite.config.ts --outDir ../dist-app --emptyOutDir), opens it with ?labs in headless Chromium, drops a synthetic
+// Adding images (app/tools/place.ts), headless: serves dist-app (build it first: npx vite build app --config
+// app/vite.config.ts --outDir ../dist-app --emptyOutDir), opens it in headless Chromium, drops a synthetic
 // page on the window and checks with real input:
 //   - "Add image" picks a PNG with alpha (the file input), placed at the page's centre, selected, drawn over the page
 //     until the page's commit render shows it, which then differs from the original inside the frame only;
@@ -11,7 +11,8 @@
 //     reading of the output at their frames;
 //   - on a page turned by /Rotate 90 with an offset crop box, an image added at the centre shows upright in the
 //     export;
-//   - without ?labs there is no "Add image", and nothing loads from another host.
+//   - "Add image" is there without any flag in the page URL, disabled until a PDF is open, and nothing loads from
+//     another host.
 //   node scripts/place-smoke.ts [out-dir]
 // Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME (default: the one
 // Playwright installed). Synthetic material only.
@@ -106,12 +107,11 @@ try {
     return { rep, bytes: new Uint8Array(Buffer.from(b64, 'base64')) };
   };
 
-  // without ?labs: no "Add image"
+  // no flag in the page URL: "Add image" is there, disabled until a PDF is open
   await page.goto(`${base}/`);
   await page.waitForFunction(() => !!(window as any).__app);
-  checks.hiddenWithoutLabs = (await page.$('[data-tool="place"]')) === null;
+  checks.shownByDefault = await page.$eval('[data-tool="place"] button', (b: Element) => (b as HTMLButtonElement).disabled).catch(() => false);
 
-  await page.goto(`${base}/?labs`);
   await openPdf(fx.bytes, 'objects.pdf');
   checks.buttonShown = (await page.$('[data-tool="place"] button')) !== null;
 

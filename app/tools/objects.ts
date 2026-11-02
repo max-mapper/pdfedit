@@ -1,4 +1,4 @@
-// Labs (?labs): the Objects card. It lists the objects under the pointer, topmost first (bold: painting there), or,
+// The Objects card. It lists the objects under the pointer, topmost first (bold: painting there), or,
 // with a selection, the selection's context (the objects under the press that selected it, or its groups, itself and
 // its members), each row with its kind (text, image, inline image, vector, vector group, shading, form group, group,
 // proposed group), size and a clip mark; a group's members are indented under it. A group the editor proposed
@@ -28,7 +28,7 @@ const r1 = (x: number) => Math.round(x * 10) / 10;
 
 const tool: Tool = {
   id: 'objects',
-  stage: 'labs',
+  connector: false,
   order: 90,
   setup(host) {
     const style = document.createElement('style');

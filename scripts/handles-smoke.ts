@@ -1,5 +1,5 @@
-// Handles on page objects (labs: app/tools/select.ts with app/tools/place.ts), headless: serves dist-app (build it
-// first: npm run app:build), opens it with ?labs in headless Chromium, drops a synthetic two-page PDF on the window
+// Handles on page objects (app/tools/select.ts with app/tools/place.ts), headless: serves dist-app (build it
+// first: npm run app:build), opens it in headless Chromium, drops a synthetic two-page PDF on the window
 // (src/objects/handlekit.ts) and checks with real mouse and key events:
 //   - a selected image gets eight resize handles and a rotation handle;
 //   - a drag of its body moves it: while the pointer moves, its pixels are drawn at the new place over the page; once
@@ -80,7 +80,7 @@ try {
   page.on('console', (m: { type(): string; text(): string }) => { if (m.type() === 'error') errors.push(m.text()); });
   const app = <T>(fn: (a: A, arg: any) => T, arg?: unknown): Promise<T> =>
     page.evaluate(([src, x]: [string, unknown]) => (0, eval)(src)((window as any).__app, x), [`(${fn.toString()})`, arg]);
-  await page.goto(`${base}/?labs`);
+  await page.goto(`${base}/`);
   await page.evaluate(async ([b64]: [string]) => {
     const u = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const dt = new DataTransfer();

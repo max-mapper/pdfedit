@@ -1,7 +1,8 @@
 // Tools: optional modules of the editor (app/tools/*.ts, loaded by app/main.ts when present). A tool builds its own
 // DOM in the slots the host gives it (a toolbar group, a side-panel card, a layer over each page), reads the model,
-// edits through the Editor, calls worker ops (app/ops/*.ts) and adds marks to box frames. Tools with stage 'labs' load
-// only with ?labs in the page URL; tools with connector: false load only in the standalone editor.
+// edits through the Editor, calls worker ops (app/ops/*.ts) and adds marks to box frames. Tools with stage 'labs' are
+// experiments: they load only with ?labs in the page URL. Tools with connector: false load only in the standalone
+// editor.
 import type { Change, Editor } from '../src/model/edit.ts';
 import type { Box, Doc, LaidBox, Page, Rect } from '../src/model/types.ts';
 import type { ExportReport, PageReport } from '../src/export/export.ts';
@@ -30,8 +31,12 @@ export type ToolHost = {
   deselect(): void;
   /** Why edits are refused now (a connector's read-only view), shown in the status line; null when allowed. */
   refused(): string | null;
-  /** A group in the top bar, before the export controls. */
-  toolbar(el: HTMLElement): void;
+  /**
+   * Controls in the top bar. With a slot, inside that slot of the bar's groups (app/index.html: 'select', 'insert' and
+   * 'arrange' of the Objects group, in that order); without one, a group of its own before help and export, captioned
+   * with its aria-label.
+   */
+  toolbar(el: HTMLElement, slot?: string): void;
   /** A card in the side panel, before the export report. */
   panel(el: HTMLElement): void;
   /** The tool's layer over page n's frames (created on first use; null before the document is open). */
@@ -87,7 +92,7 @@ export type ToolHooks = {
 
 export type Tool = {
   id: string;
-  /** 'labs': shown only with ?labs in the page URL. Default 'on'. */
+  /** 'labs': an experiment, shown only with ?labs in the page URL. Default 'on'. */
   stage?: 'labs' | 'on';
   /** false: not loaded when a connector runs the editor. Default true. */
   connector?: boolean;

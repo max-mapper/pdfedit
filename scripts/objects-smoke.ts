@@ -1,6 +1,6 @@
-// Selecting page objects (labs: app/tools/select.ts and the Objects card, app/tools/objects.ts), headless: serves
+// Selecting page objects (app/tools/select.ts and the Objects card, app/tools/objects.ts), headless: serves
 // dist-app (build it first: npx vite build app --config app/vite.config.ts --outDir ../dist-app --emptyOutDir), opens
-// it with ?labs in headless Chromium, drops synthetic pages on the window (src/objects/testkit.ts, selectkit.ts) and
+// it in headless Chromium, drops synthetic pages on the window (src/objects/testkit.ts, selectkit.ts) and
 // checks with real mouse and key events:
 //   - the Objects card lists the page's objects in paint order, one row each, and hovering a row outlines it;
 //   - under a point where two filled rectangles overlap, the one on top is listed first and painting, the other after
@@ -19,7 +19,7 @@
 //   - paint order (src/objects/order.ts): Ctrl+] brings a rectangle forward; the app's export writes it and verifies,
 //     and in PDFium the exported page differs from the original only where it overlaps the one it passed; Ctrl+[ on a path outside a clip's q … Q is refused with the
 //     reason and records nothing; undo takes the order change back;
-//   - without ?labs the card is not there, and nothing loads from another host.
+//   - the card is there without any flag in the page URL, and nothing loads from another host.
 //   node scripts/objects-smoke.ts [out-dir]
 // Playwright comes from PW_CORE (default: the playwright-core package), Chromium from CHROME (default: the one
 // Playwright installed). Synthetic material only.
@@ -84,12 +84,11 @@ try {
   const app = <T>(fn: (a: A, arg: any) => T, arg?: unknown): Promise<T> =>
     page.evaluate(([src, x]: [string, unknown]) => (0, eval)(src)((window as any).__app, x), [`(${fn.toString()})`, arg]);
 
-  // without ?labs: no Objects card
+  // no flag in the page URL: the Objects card is there
   await page.goto(`${base}/`);
   await page.waitForFunction(() => !!(window as any).__app);
-  checks.hiddenWithoutLabs = (await page.$('#objects')) === null;
+  checks.shownByDefault = (await page.$('#objects')) !== null;
 
-  await page.goto(`${base}/?labs`);
   await drop();
   await page.waitForFunction(() => { const a = (window as any).__app; return a?.ready && a.doc.pages[0] && a.rendered(0).orig; }, undefined, { timeout: 60000 });
   checks.cardShown = (await page.$('#objects')) !== null;

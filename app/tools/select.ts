@@ -1,6 +1,8 @@
-// Labs (?labs): selecting page objects where several overlap (src/objects/hit.ts).
+// Selecting page objects where several overlap (src/objects/hit.ts): the Select toggle and the arrange buttons of the
+// bar's Objects group (Group, Ungroup, Forward, Backward, Turn left, Turn right, Delete and the crop choice). A button
+// that cannot act on the selection is disabled and its tooltip says why.
 //
-// While "Select objects" is on, a press on a page selects the topmost object painted at that point (the render hit
+// While Select is on, a press on a page selects the topmost object painted at that point (the render hit
 // test, then the geometry where the render sees nothing). Alt-click, or a second press on the same spot without moving
 // (not the second press of a double-click), selects the next object down under the point and wraps; Shift with Alt
 // goes up. Tab and Shift-Tab step through the page's objects in paint order. A form XObject is one entry, a group:
@@ -95,6 +97,32 @@ const CSS = `
 [data-tool="select"] .crop { display: inline-flex; gap: 4px; align-items: center; }
 `;
 const NS = 'http://www.w3.org/2000/svg';
+const TOGGLE_TITLE = 'Select page objects: click a picture, shape, group or text box; Alt-click or click again for the one below; ' +
+  'Shift-click adds to the selection; Tab steps through them in paint order; Enter steps into a group, Escape out; ' +
+  'arrows nudge the selection (Shift: 10 pt)';
+/** The arrange buttons' tooltips (data-cmd → text). */
+const TITLES: Record<string, string> = {
+  group: 'Make the selected objects one group (Ctrl+G); Shift-click adds objects to the selection',
+  ungroup: 'Undo the selected group, yours or a proposed one (Ctrl+Shift+G)',
+  forward: 'Bring the selection forward by one, within its content stream (Ctrl+])',
+  backward: 'Send the selection backward by one, within its content stream (Ctrl+[)',
+  'turn-left': 'Turn the selection a quarter turn left, as shown (Shift+R)',
+  'turn-right': 'Turn the selection a quarter turn right, as shown (R)',
+  delete: 'Remove the selection from the page (Delete); not a redaction: the file\'s earlier version keeps it',
+};
+// quarter-turn arrows (16 × 16)
+const TURN_LEFT = 'M3.5 7.5a5 5 0 1 1 1.6 4.4M3.5 3v4.5H8';
+const TURN_RIGHT = 'M12.5 7.5a5 5 0 1 0-1.6 4.4M12.5 3v4.5H8';
+function icon(d: string): SVGSVGElement {
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('class', 'ic');
+  svg.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS(NS, 'path');
+  p.setAttribute('d', d);
+  svg.append(p);
+  return svg;
+}
 const REPEAT_PX = 4;   // a press this close to the last one, with no move beyond it in between, is the same spot
 const HIT_PX = 2;      // the geometric test's tolerance around strokes and edges, in screen pixels
 const DRAG_PX = 3;     // a press on the selection becomes a move once the pointer has gone this far
@@ -109,24 +137,27 @@ type Ranking = { ranked: Ranked; inner: Map<string, Ranked> };
 
 const tool: Tool = {
   id: 'select',
-  stage: 'labs',
+  connector: false,
   order: 85,
   setup(host) {
     const style = document.createElement('style');
     style.textContent = CSS;
     document.head.append(style);
-    const toggle = h('button', { 'aria-pressed': 'true', title: 'Click to select page objects (images, vectors, groups, text boxes); Alt-click or click again for the one below; Tab steps through them' }, 'Select objects') as HTMLButtonElement;
-    const groupBtn = h('button', { 'data-cmd': 'group', disabled: '', title: 'Make the selected objects one group (Ctrl+G); Shift-click adds objects to the selection' }, 'Group') as HTMLButtonElement;
-    const ungroupBtn = h('button', { 'data-cmd': 'ungroup', disabled: '', title: 'Undo the selected group, yours or a proposed one (Ctrl+Shift+G)' }, 'Ungroup') as HTMLButtonElement;
-    const forwardBtn = h('button', { 'data-cmd': 'forward', disabled: '', title: 'Bring the selection forward by one, within its content stream (Ctrl+])' }, 'Forward') as HTMLButtonElement;
-    const backwardBtn = h('button', { 'data-cmd': 'backward', disabled: '', title: 'Send the selection backward by one, within its content stream (Ctrl+[)' }, 'Backward') as HTMLButtonElement;
-    const turnLeftBtn = h('button', { 'data-cmd': 'turn-left', disabled: '', title: 'Turn the selection a quarter turn left, as shown (Shift+R)' }, 'Turn left') as HTMLButtonElement;
-    const turnRightBtn = h('button', { 'data-cmd': 'turn-right', disabled: '', title: 'Turn the selection a quarter turn right, as shown (R)' }, 'Turn right') as HTMLButtonElement;
-    const deleteBtn = h('button', { 'data-cmd': 'delete', disabled: '', title: 'Remove the selection from the page (Delete); not a redaction: the file\'s earlier version keeps it' }, 'Delete') as HTMLButtonElement;
+    const toggle = h('button', { 'aria-pressed': 'true', title: TOGGLE_TITLE }, 'Select') as HTMLButtonElement;
+    const cmd = (id: string, label: string | SVGSVGElement, aria?: string) =>
+      h('button', { 'data-cmd': id, disabled: '', title: TITLES[id], ...(aria ? { 'aria-label': aria, class: 'icon' } : {}) }, label) as HTMLButtonElement;
+    const groupBtn = cmd('group', 'Group');
+    const ungroupBtn = cmd('ungroup', 'Ungroup');
+    const forwardBtn = cmd('forward', 'Forward');
+    const backwardBtn = cmd('backward', 'Backward');
+    const turnLeftBtn = cmd('turn-left', icon(TURN_LEFT), 'Turn left');
+    const turnRightBtn = cmd('turn-right', icon(TURN_RIGHT), 'Turn right');
+    const deleteBtn = cmd('delete', 'Delete');
     const cropWith = h('button', { 'data-crop': 'move', 'aria-pressed': 'true', title: 'A copy of the crop moves with it, so it keeps the shape it had' }, 'Move with its crop') as HTMLButtonElement;
     const cropWithout = h('button', { 'data-crop': 'drop', 'aria-pressed': 'false', title: 'It moves without the crop and shows whole; the others keep the crop' }, 'Move without the crop') as HTMLButtonElement;
     const cropBar = h('span', { class: 'crop', hidden: '', title: 'A clip it shares with other objects crops it' }, cropWith, cropWithout) as HTMLSpanElement;
-    host.toolbar(h('div', { role: 'group', 'aria-label': 'Objects' }, toggle, groupBtn, ungroupBtn, forwardBtn, backwardBtn, turnLeftBtn, turnRightBtn, deleteBtn, cropBar));
+    host.toolbar(h('div', {}, toggle), 'select');
+    host.toolbar(h('div', {}, groupBtn, ungroupBtn, forwardBtn, backwardBtn, turnLeftBtn, turnRightBtn, deleteBtn, cropBar), 'arrange');
 
     let active = true;
     const data = new Map<number, PageData>();
@@ -438,14 +469,19 @@ const tool: Tool = {
         draw();
       } catch { /* the scene keeps the order it had */ }
     }
+    /** Each button's state for the selection; a disabled one's tooltip says why. */
     function syncButtons(): void {
       const s = cur ? item(cur.n, cur.id) : null;
       const obj = !!s && !s.box;
       const added = !!cur && [...extra, cur.id].some(isAdded);
-      groupBtn.disabled = !(active && obj && extra.length > 0 && !added);
-      ungroupBtn.disabled = !(active && obj && !!s!.group && !extra.length);
-      forwardBtn.disabled = backwardBtn.disabled = !(active && obj && !extra.length && !added);
-      turnLeftBtn.disabled = turnRightBtn.disabled = deleteBtn.disabled = !(active && obj);
+      const none = !host.doc() ? 'open a PDF first' : !active ? 'turn Select on first' : !obj ? 'select an object first (click a picture or a shape)' : null;
+      const set = (b: HTMLButtonElement, why: string | null) => { b.disabled = !!why; b.title = why ? `${TITLES[b.dataset.cmd!]}: ${why}` : TITLES[b.dataset.cmd!]; };
+      set(groupBtn, none ?? (added ? 'added images are not grouped' : extra.length ? null : 'Shift-click a second object first'));
+      set(ungroupBtn, none ?? (extra.length ? 'select one group' : s!.group ? null : 'select a group first (dashed: proposed)'));
+      const order = none ?? (extra.length ? 'select one object, or group them first' : added ? 'added images stay on top, in the order added' : null);
+      set(forwardBtn, order);
+      set(backwardBtn, order);
+      for (const b of [turnLeftBtn, turnRightBtn, deleteBtn]) set(b, none);
     }
     let presses = 0;
     /** A press the tool takes moves the keyboard focus off a field outside the pages (no mousedown follows it). */
@@ -986,6 +1022,7 @@ const tool: Tool = {
       if (!active) { cur = null; extra = []; hover = null; level = { n: -1, id: null }; draw(); publish(null); }
       host.msg(active ? 'Select objects: click an object; Alt-click for the one below; Tab steps through them.' : 'Object selection is off.');
     });
+    syncButtons();
 
     return {
       pointerdown: press,

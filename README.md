@@ -1,8 +1,8 @@
 # pdfedit
 
-A PDF text editor that runs in the browser. PDFium, built to WebAssembly, reads and draws each page. pdfedit finds the paragraph boxes and lets you edit the text in each box. The text reflows inside its own box. It saves real, searchable text. Only the edited text is removed from the page, and the new text is added as a new layer.
+A PDF text editor that runs in the browser. PDFium, built to WebAssembly, reads and draws each page. pdfedit finds the paragraph boxes and lets you edit the text in each box. The text reflows inside its own box. It saves real, searchable text. Only the edited text is removed from the page, and the new text is added as a new layer. You can also move, resize, turn, group, reorder and delete pictures and shapes, and add images.
 
-**Demo:** https://max-mapper.github.io/pdfedit/ (open a PDF, double-click a paragraph, edit, export).
+**Demo:** https://max-mapper.github.io/pdfedit/ (open a PDF or try the sample, double-click a paragraph, edit, export). Press `?` for help.
 
 ## Run
 

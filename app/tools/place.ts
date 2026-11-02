@@ -1,4 +1,4 @@
-// Labs (?labs): adding a PNG or JPEG image to a page (src/objects/place.ts).
+// Adding a PNG or JPEG image to a page (src/objects/place.ts): "Add image" in the bar's Objects group.
 //
 // "Add image" picks a file and places it on the page in view, centred; a file dropped on a page goes where it is
 // dropped. It comes at its natural size (its pixels at the resolution the file declares, else 72 dpi), made smaller to
@@ -25,12 +25,13 @@ const isImage = (f: File) => TYPES.includes(f.type) || /\.(png|jpe?g)$/i.test(f.
 
 const tool: Tool = {
   id: 'place',
-  stage: 'labs',
+  connector: false,
   order: 80,
   setup(host) {
     const input = h('input', { type: 'file', accept: TYPES.join(','), hidden: '' }) as HTMLInputElement;
-    const button = h('button', { title: `Add a PNG or JPEG image to the page in view (or drop one on a page). Up to ${IMAGE_LIMITS.bytes / 1048576} MB and ${IMAGE_LIMITS.side} pixels a side.` }, 'Add image') as HTMLButtonElement;
-    host.toolbar(h('div', {}, button, input));
+    const TITLE = `Add a PNG or JPEG image to the page in view (or drop one on a page). Up to ${IMAGE_LIMITS.bytes / 1048576} MB and ${IMAGE_LIMITS.side} pixels a side`;
+    const button = h('button', { title: TITLE, disabled: '' }, 'Add image') as HTMLButtonElement;
+    host.toolbar(h('div', {}, button, input), 'insert');
 
     /** Files placed in this session, by asset key: the decoded image for drawing until the commit render shows it. */
     const files = new Map<string, { bitmap: ImageBitmap; info: ImageInfo }>();
@@ -140,7 +141,11 @@ const tool: Tool = {
       underlay,
       drop,
       opened() { sel = null; },
-      updated() { button.disabled = !host.doc() || !!host.refused(); },
+      updated() {
+        const why = !host.doc() ? 'open a PDF first' : host.refused();
+        button.disabled = !!why;
+        button.title = why ? `${TITLE}: ${why}` : TITLE;
+      },
       debug: {
         get state() { return { selected: sel ? { ...sel } : null, files: files.size }; },
         /** Adds an image from bytes (base64) to page n at a user-space point or the centre; the sentence shown. */

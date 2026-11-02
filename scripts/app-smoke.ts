@@ -285,7 +285,7 @@ try {
   summary.afterKeyboard = await app((a) => a.pageState(0));
   // (controls of optional tools, in groups marked data-tool, are not the editor's own)
   summary.toolbar = await page.$$eval('#bar button', (bs: A[]) => bs.filter((b) => !b.closest('[data-tool]')).map((b) => b.id));
-  checks.toolbar = (summary.toolbar as string[]).join(',') === 'open,zoom-out,zoom-in,fit-width,fit-page,undo,redo,export';
+  checks.toolbar = (summary.toolbar as string[]).join(',') === 'open,undo,redo,zoom-out,zoom-in,fit-width,fit-page,edit-text,tb-split,tb-merge,tb-font,more,panel-toggle,help-btn,export';
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
 
   // 6. undo and redo of a new edit (a nudge: one step, the redo stack cleared)

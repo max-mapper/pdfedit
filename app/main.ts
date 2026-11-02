@@ -15,6 +15,11 @@
 // then shows that true render and the overlay keeps only boxes changed since (and boxes export refused). A burst of
 // edits makes one export; a commit overtaken by a newer edit is skipped or ignored.
 //
+// The bar: File, Edit, View, Text and Objects groups (the Objects group holds the tools' controls, ToolHost.toolbar
+// slots), help and export; at phone width the groups fold into a Tools menu and the side panel into a sheet. With no
+// document open the welcome offers a file or the sample (src/objects/sample.ts, also ?sample in the page URL); ? opens
+// the help panel.
+//
 // Optional modules (present in some builds): tools (app/tools/*.ts, app/toolhost.ts) add controls, panels, page layers
 // and marks on box frames; a connector (app/connectors/*.ts, app/connector.ts) connects the editor to a host
 // application, which then supplies the document and may refuse edits; worker ops (app/ops/*.ts) run in the worker.
@@ -83,6 +88,9 @@ const ui = {
   spaceBefore: $<HTMLInputElement>('space-before'), spaceAfter: $<HTMLInputElement>('space-after'), indent: $<HTMLInputElement>('indent'),
   bx: $<HTMLInputElement>('bx'), by: $<HTMLInputElement>('by'), bw: $<HTMLInputElement>('bw'), bh: $<HTMLInputElement>('bh'),
   pin: $<HTMLInputElement>('pin'), split: $<HTMLButtonElement>('split'), merge: $<HTMLButtonElement>('merge'), boxinfo: $<HTMLParagraphElement>('boxinfo'),
+  editText: $<HTMLButtonElement>('edit-text'), tbSplit: $<HTMLButtonElement>('tb-split'), tbMerge: $<HTMLButtonElement>('tb-merge'), tbFont: $<HTMLButtonElement>('tb-font'),
+  sample: $<HTMLButtonElement>('sample'), bar: $<HTMLElement>('bar'), more: $<HTMLButtonElement>('more'), panelToggle: $<HTMLButtonElement>('panel-toggle'),
+  help: $<HTMLDialogElement>('help'), helpBtn: $<HTMLButtonElement>('help-btn'), helpClose: $<HTMLButtonElement>('help-close'),
   exportBody: $<HTMLDivElement>('export-body'),
   pageno: $<HTMLInputElement>('pageno'), pagecount: $<HTMLSpanElement>('pagecount'), stZoom: $<HTMLSpanElement>('st-zoom'),
   stDetect: $<HTMLSpanElement>('st-detect'), stEdits: $<HTMLSpanElement>('st-edits'), stCommit: $<HTMLSpanElement>('st-commit'),
@@ -177,7 +185,16 @@ const toolHost: ToolHost = {
   endEditing: () => { if (editing) stopEditing(); },
   deselect: () => { if (sel) deselect(); },
   refused: () => connector?.readOnly ?? null,
-  toolbar: (el) => { el.classList.add('grp'); document.querySelector('#bar .spacer')!.before(el); },
+  toolbar: (el, slot) => {
+    // in a slot of the bar's groups (the group shows once something is in it), else a group of its own, captioned
+    // with its aria-label and folded into the Tools menu at phone width
+    const at = slot ? document.querySelector<HTMLElement>(`#bar [data-slot="${slot}"]`) : null;
+    if (at) { at.append(el); at.closest<HTMLElement>('.grp')!.hidden = false; return; }
+    el.classList.add('grp', 'more-item');
+    const cap = el.getAttribute('aria-label');
+    if (cap && !el.dataset.cap) el.dataset.cap = cap;
+    document.querySelector('#bar .spacer')!.before(el);
+  },
   panel: (el) => { el.classList.add('card'); $('exprep').before(el); },
   pageLayer: () => null,   // each tool gets its own (hostFor)
   placePct: (el, n, r) => { const v = views[n]; if (v) placePct(el, v, r); },
@@ -198,7 +215,7 @@ const tools: { id: string; hooks: ToolHooks }[] = [];
 /** A tool's host: the shared one with the tool's own page layers. */
 const hostFor = (id: string): ToolHost => ({
   ...toolHost,
-  toolbar: (el) => { el.dataset.tool = id; toolHost.toolbar(el); },
+  toolbar: (el, slot) => { el.dataset.tool = id; toolHost.toolbar(el, slot); },
   panel: (el) => { el.dataset.tool = id; toolHost.panel(el); },
   pageLayer: (n) => {
     const v = views[n];
@@ -270,6 +287,15 @@ function reset() {
 fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) openFile(f); fileInput.value = ''; });
 ui.open.addEventListener('click', () => fileInput.click());
 ui.open2.addEventListener('click', () => fileInput.click());
+
+/** The sample document (src/objects/sample.ts), made in this tab when asked for. */
+async function openSample() {
+  msg('Making the sample…');
+  const { samplePdf, SAMPLE_NAME } = await import('../src/objects/sample.ts');
+  const bytes = await samplePdf();
+  openBytes(bytes.slice().buffer, SAMPLE_NAME);
+}
+ui.sample.addEventListener('click', () => { void openSample().catch((err) => msg(`The sample could not be made: ${(err as Error).message}`)); });
 
 let dragDepth = 0;
 const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -728,6 +754,7 @@ function stopEditing() {
   if (connector?.hover && sel) connector.hover(sel.page, sel.id, 0, null);
   if (sel) flushCommit(sel.page);
   connector?.editingEnded?.();
+  syncTextBar();
   updateStatus();
 }
 
@@ -958,7 +985,9 @@ const setVal = (el: HTMLInputElement, x: string) => { if (document.activeElement
 
 function updateAll() { updatePanel(); updateStatus(); }
 
-function updatePanel() {
+function updatePanel() { updateCards(); syncTextBar(); }
+
+function updateCards() {
   ui.undo.disabled = !editor?.canUndo;
   ui.redo.disabled = !editor?.canRedo;
   ui.export.disabled = !doc || exportPending > 0 || (!!connector && !connector.canExport);
@@ -1022,6 +1051,18 @@ function updatePanel() {
   ui.boxinfo.textContent = `${b.id} · ${b.kind}${b.vertical ? ' · vertical' : ''} · ${b.paragraphs.length} paragraph${b.paragraphs.length === 1 ? '' : 's'}` +
     (b.edited ? ' · edited' : '') + (b.hand ? ' · adjusted by hand' : '') + (L.overflow ? ' · text overflows' : '') + infos.map((x) => ` · ${x}`).join('') +
     (views[sel.page]?.refused.get(b.id) ? ` · export refused: ${views[sel.page].refused.get(b.id)}` : '');
+}
+
+/** The Text group of the bar: what the selected box allows, mirrored from the Text panel's buttons. */
+function syncTextBar() {
+  const box = !!sel && !!editor && !!fonts && !!findBox(sel.page, sel.id);
+  const need = 'select a text box first (click it)';
+  const set = (b: HTMLButtonElement, on: boolean, title: string, why: string) => { b.disabled = !on; b.title = on ? title : `${title}: ${why}`; };
+  set(ui.editText, box && !editing, 'Edit the selected box\'s text (Enter, or double-click a box); Escape stops', editing ? 'editing now' : need);
+  set(ui.tbSplit, box, ui.split.title || 'Split the box at the caret', need);
+  set(ui.tbMerge, box && !ui.merge.disabled, ui.merge.title || 'Merge the shift-clicked box into the selected one', box ? 'Shift-click a second box first' : need);
+  ui.tbMerge.textContent = box && !ui.merge.disabled ? ui.merge.textContent : 'Merge';
+  set(ui.tbFont, box, 'Font, size, colour, alignment and spacing of the selected box (the Text panel)', need);
 }
 
 function updateStatus() {
@@ -1140,6 +1181,30 @@ ui.merge.addEventListener('click', () => {
 });
 ui.undo.addEventListener('click', () => history?.undo());
 ui.redo.addEventListener('click', () => history?.redo());
+// the bar's Text group: the panel's own buttons do the work (and a connector's gates apply to both)
+ui.editText.addEventListener('click', () => { if (sel) startEditing(); });
+ui.tbSplit.addEventListener('click', () => ui.split.click());
+ui.tbMerge.addEventListener('click', () => ui.merge.click());
+ui.tbFont.addEventListener('click', () => { setPanelOpen(true); ui.typo.scrollIntoView({ block: 'nearest' }); ui.font.focus(); });
+
+// ── the Tools menu and the panel sheet (phone width), help ─────────────────────────────────────────────────
+function setMenuOpen(open: boolean) { ui.bar.classList.toggle('open', open); ui.more.setAttribute('aria-expanded', String(open)); }
+function setPanelOpen(open: boolean) {
+  const narrow = getComputedStyle(ui.panelToggle).display !== 'none';
+  document.body.classList.toggle('panel-open', open && narrow);
+  ui.panelToggle.setAttribute('aria-expanded', String(open && narrow));
+}
+ui.more.addEventListener('click', () => setMenuOpen(!ui.bar.classList.contains('open')));
+ui.panelToggle.addEventListener('click', () => setPanelOpen(!document.body.classList.contains('panel-open')));
+// a command picked from the menu closes it
+ui.bar.addEventListener('click', (e) => { const b = (e.target as HTMLElement).closest('button'); if (b && b !== ui.more && b.closest('.more-item')) setMenuOpen(false); });
+function showHelp() {
+  for (const sec of ui.help.querySelectorAll<HTMLElement>('[data-needs]')) sec.hidden = !tools.some((t) => t.id === sec.dataset.needs);
+  if (!ui.help.open) ui.help.showModal();
+}
+ui.helpBtn.addEventListener('click', showHelp);
+ui.helpClose.addEventListener('click', () => ui.help.close());
+ui.help.addEventListener('click', (e) => { if (e.target === ui.help) ui.help.close(); });   // a click on the backdrop
 
 /** Delete on a selected box: its text cleared, one undo step. */
 function clearText() {
@@ -1317,6 +1382,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && (k === '=' || k === '+')) { e.preventDefault(); stepZoom(1); return; }
   if (mod && k === '-') { e.preventDefault(); stepZoom(-1); return; }
   if (mod && k === '0') { e.preventDefault(); setZoom(1); return; }
+  if (e.key === '?' && !mod && !inField && !editing) { e.preventDefault(); showHelp(); return; }
   if (!editor || !history) return;
   if (mod && k === 'z' && !inField) { e.preventDefault(); if (e.shiftKey) history.redo(); else history.undo(); return; }
   if (mod && k === 'y' && !inField) { e.preventDefault(); history.redo(); return; }
@@ -1482,5 +1548,6 @@ const debug = {
 (window as unknown as { __app: typeof debug }).__app = debug;
 syncZoomUi();
 updateAll();
-if (connector) { connector.mount(); void connector.load(); }
+if (connector) { ui.sample.hidden = true; connector.mount(); void connector.load(); }
 else if (loaded.error) msg(`The host connection is off: ${loaded.error}.`);
+else if (new URL(location.href).searchParams.has('sample')) void openSample().catch((err) => msg(`The sample could not be made: ${(err as Error).message}`));
