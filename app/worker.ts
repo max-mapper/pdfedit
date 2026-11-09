@@ -17,7 +17,8 @@ import '../src/export/objects.ts';   // export writes the pages' object edits (P
 import { loadAppFonts } from './assets.ts';
 import type { CommitResult, Req, Res } from './protocol.ts';
 import { loadOps, type OpContext } from './opshost.ts';
-import { openForEdit, type PdfEdit } from '../src/pdf/edit.ts';
+import type { PdfEdit } from '../src/pdf/edit.ts';
+import { openEditable } from '../src/pdf/editable.ts';
 import type { ViewBox } from '../src/engine/view.ts';
 
 const P = fetch(wasmUrl).then((r) => r.arrayBuffer()).then((wasmBinary) => openPdfium({ wasmBinary }));
@@ -173,7 +174,7 @@ self.onmessage = async (e: MessageEvent<Req>) => {
       if (!fn) { post({ kind: 'op-result', id: m.id, error: `no worker op ${m.op}` }); return; }
       const ctx: OpContext = {
         pdfium, original: () => original, doc: () => doc,
-        edit: () => { if (!original) return Promise.reject(new Error('no document is open')); return (editP ??= openForEdit(original)); },
+        edit: () => { if (!original) return Promise.reject(new Error('no document is open')); return (editP ??= openEditable(original, pdfium).then((r) => r.edit)); },
       };
       try { post({ kind: 'op-result', id: m.id, result: await fn(ctx, m.args) }); } catch (err) {
         post({ kind: 'op-result', id: m.id, error: String((err as Error).message || err) });

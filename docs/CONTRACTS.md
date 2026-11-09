@@ -36,7 +36,11 @@ type TextShow = { n: number; opIndex: number; op: 'Tj' | 'TJ' | "'" | '"'; font:
                   fontSize: number; charSpacing: number; wordSpacing: number; hScale: number;
                   strings: Uint8Array[]; start: number; end: number; inBT: boolean };
 
-openForEdit(bytes: Uint8Array): Promise<PdfEdit>
+openForEdit(bytes: Uint8Array): Promise<PdfEdit>     // refuses an encrypted file (pdf-lib cannot decrypt)
+openEditable(bytes: Uint8Array, P: Pdfium): Promise<{ edit: PdfEdit; decrypted: boolean }>
+     // openForEdit on any file PDFium opens without a password: a file encrypted with an owner password only is read
+     // from PDFium's decrypted copy (decrypted: true); one that needs a user password throws PdfiumOpenError
+     // (needsPassword). exportDoc edits the same copy and writes the output unencrypted, with a full save.
 edit.pageCount: number
 edit.contents(page: number): Uint8Array             // the page's content streams, decoded and concatenated
 edit.fontInfo(page: number, resourceName: string): FontInfo   // codes → widths, for advances

@@ -3,7 +3,8 @@
 // alone cannot measure glyphs without the fonts); other kinds keep their own and are checked against PDFium's. Objects
 // PDFium lists but the walk did not find, or the other way round, are reported in `notes`.
 import { openPdfium, type EngineObject, type PdfPage, type Pdfium, type Rect } from '../engine/pdfium.ts';
-import { openForEdit, type PdfEdit } from '../pdf/edit.ts';
+import type { PdfEdit } from '../pdf/edit.ts';
+import { openEditable } from '../pdf/editable.ts';
 import type { ContentTree } from '../pdf/tree.ts';
 import { readObjects } from './read.ts';
 import type { PageObject, PageObjects } from './types.ts';
@@ -45,7 +46,7 @@ export function pageObjects(edit: PdfEdit, pg: PdfPage, tree?: ContentTree): Pag
 /** Every listed page's objects (all pages by default), from the file's bytes. */
 export async function listObjects(bytes: Uint8Array, pages?: number[], opts: { pdfium?: Pdfium } = {}): Promise<PageObjects[]> {
   const P = opts.pdfium ?? (await openPdfium());
-  const edit = await openForEdit(bytes);
+  const { edit } = await openEditable(bytes, P); // an owner-password-only file: PDFium's decrypted copy
   const doc = P.open(bytes);
   try {
     const want = pages ?? [...Array(doc.pageCount).keys()];

@@ -5,6 +5,7 @@ export { parseOps, textShows, type Op, type TextShow } from './ops.ts';
 export { fontInfoFromDict, type FontInfo } from './fonts.ts';
 export { blankOut, blankOutDetailed, showDisplacement, type Displacement, type Replacement } from './surgery.ts';
 export { openForEdit, PdfEdit } from './edit.ts';
+export { hasEncrypt, openEditable } from './editable.ts';
 // filters, decoding and the content tree
 export { decodeFilters, SUPPORTED_FILTERS, type DecodeParms, type FilterSpec } from './filters.ts';
 export { decodeStream, streamFilters } from './edit.ts';
